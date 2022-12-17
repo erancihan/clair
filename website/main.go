@@ -2,28 +2,20 @@ package main
 
 import (
 	"embed"
-	"log"
 	"os"
 
-	migrations "clair/website/migrations"
+	"clair/website/database"
 	routes "clair/website/routes"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 )
 
 //go:embed all:web-ui/*
 var pagesFS embed.FS
 
 func main() {
-	db, err := gorm.Open(sqlite.Open(".opt/dev.db"), &gorm.Config{})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	migrations.Run(db)
+	database.New()
 
 	router := gin.Default()
 	router.RedirectTrailingSlash = true

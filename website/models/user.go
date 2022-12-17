@@ -7,7 +7,8 @@ import (
 type User struct {
 	gorm.Model
 
-	Username    string
-	TFASecret   string
-	RedditToken string
+	Username      string
+	Email         string `gorm:"unique;not null"`
+	TFASecret     string `gorm:"unique;not null"`
+	HasRegistered bool   `gorm:"default:false"`
 }
