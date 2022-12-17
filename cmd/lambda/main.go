@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	discordbot "mercury/internal/discord-bot"
-	"mercury/internal/utils"
+	discordbot "clair/internal/discord-bot"
+	"clair/internal/utils"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"

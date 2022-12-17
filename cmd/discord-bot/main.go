@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"time"
 
-	awssqshandler "mercury/internal/aws-sqs-handler"
-	discordbot "mercury/internal/discord-bot"
-	timedexecutor "mercury/internal/timed-executor"
-	utils "mercury/internal/utils"
+	awssqshandler "clair/internal/aws-sqs-handler"
+	discordbot "clair/internal/discord-bot"
+	timedexecutor "clair/internal/timed-executor"
+	utils "clair/internal/utils"
 
 	sentry "github.com/getsentry/sentry-go"
 )

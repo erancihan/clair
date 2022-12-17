@@ -3,7 +3,7 @@ package discordbot
 import (
 	"log"
 
-	"mercury/internal/utils"
+	"clair/internal/utils"
 
 	"github.com/bwmarrin/discordgo"
 )

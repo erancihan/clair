@@ -3,7 +3,7 @@ package awssqshandler
 import (
 	"log"
 
-	"mercury/internal/utils"
+	"clair/internal/utils"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"

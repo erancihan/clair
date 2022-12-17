@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	migrations "mercury/website/migrations"
-	routes "mercury/website/routes"
+	migrations "clair/website/migrations"
+	routes "clair/website/routes"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"

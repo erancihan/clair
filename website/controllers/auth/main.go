@@ -34,7 +34,7 @@ func TFAGetQR(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"message": err})
 	}
 
-	// TODO: store SECRET
+	// TODO: temporarily store secret
 
 	ctx.JSON(http.StatusOK, gin.H{"qr": qr})
 }

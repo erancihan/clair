@@ -57,7 +57,7 @@ lambda-build-and-upload: lambda-build
 	cd ${OUT_DIR}; zip function.zip lambda
 	cd ${OUT_DIR}; \
 		aws lambda update-function-code \
-			--function-name mercury-sqs-lambda \
+			--function-name clair-sqs-lambda \
 			--zip-file fileb://function.zip \
 			--region ${AWS_SQS_REGION}
 
@@ -74,7 +74,7 @@ website-build:
 	rm -rf website/web-ui
 	mv -v  web/out website/web-ui
 	find website/web-ui/ -empty -type d -delete
-	${GO_BUILD_CMD} -o "${OUT_DIR}/mercury-website" website/main.go
+	${GO_BUILD_CMD} -o "${OUT_DIR}/clair-website" website/main.go
 
 website-run:
 	go run ${GO_ARGS} website/main.go

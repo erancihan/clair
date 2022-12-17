@@ -1,9 +1,9 @@
 package routes
 
 import (
+	"clair/website/controllers"
+	"clair/website/controllers/auth"
 	"embed"
-	"mercury/website/controllers"
-	"mercury/website/controllers/auth"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
