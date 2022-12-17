@@ -14,3 +14,8 @@ So that I won't get lost.
     - [ ] YouTube-like ID system to map webhook to discord channel???
   - [ ] Webhook to Discord
   - [ ] Webhook preview for Discord
+
+## .env
+|field|type|
+|:-|:-|
+|TFA_ISSUER|string|

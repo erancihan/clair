@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"clair/internal/utils"
 	"clair/website/database"
 	"clair/website/models"
 	"net/http"
@@ -10,9 +11,13 @@ import (
 )
 
 var (
-	Issuer string = "erancihan.com"
+	Issuer string = "careless-issuer"
 	Window int    = 0
 )
+
+func init() {
+	Issuer = utils.GetEnv("TFA_ISSUER", "absent-minded-issuer")
+}
 
 func TFAGetQR(ctx *gin.Context) {
 	secret, err := otp.NewSecret()
