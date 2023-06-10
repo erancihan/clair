@@ -2,52 +2,50 @@
 include .env
 export $(shell sed 's/=.*//' .env)
 
-.PHONY: run
+.PHONY: build
 
 OUT_DIR := ./make-build-release
+OUTFILE := ${OUT_DIR}/clair.bin
 GO_ARGS := -mod vendor
 GO_BUILD_CMD := go build ${GO_ARGS}
 
 GNUMAKEFLAGS=-j3
 
-vet:
-	go vet ./...
+build:
+	${GO_BUILD_CMD} -o "${OUTFILE}" cmd/clair/main.go
 
-# Bot ----------------------
-bot-build:
-	${GO_BUILD_CMD} -o "${OUT_DIR}/bot" cmd/discord-bot/main.go
+build-linux-amd64:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+		${GO_BUILD_CMD} -o "${OUTFILE}" cmd/clair/main.go
 
-bot-dev:
-	AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-	go run ${GO_ARGS} cmd/discord-bot/main.go
+devel:
+	AWS_ACCESS_KEY_ID=${clairSQS_AWS_ACCESS_KEY_ID} \
+	AWS_SECRET_ACCESS_KEY=${clairSQS_AWS_SECRET_ACCESS_KEY} \
+		go run ${GO_ARGS} cmd/clair/main.go
 
-bot-dev-noenv:
-	go run ${GO_ARGS} cmd/discord-bot/main.go
+dev: devel
 
-bot-run:
-	AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-	"${OUT_DIR}/bot"
+devel-noenv:
+	go run ${GO_ARGS} cmd/clair/main.go
 
-bot-run-noenv:
-	"${OUT_DIR}/bot"
+run:
+	AWS_ACCESS_KEY_ID=${clairSQS_AWS_ACCESS_KEY_ID} \
+	AWS_SECRET_ACCESS_KEY=${clairSQS_AWS_SECRET_ACCESS_KEY} \
+		"${OUTFILE}" --verbose
 
-# Notification Bot ----------
-notification-bot-build:
-	${GO_BUILD_CMD} -o "${OUT_DIR}/notification-bot" cmd/discord-notification-bot/main.go
+run-noenv:
+	${OUTFILE} --verbose
 
-notification-bot-dev:
-	AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-	go run ${GO_ARGS} cmd/discord-notification-bot/main.go
+all: build
 
-notification-bot-dev-noenv:
-	go run ${GO_ARGS} cmd/discord-notification-bot/main.go
+# docker
+docker-build:
+	docker build -t clair .
 
-notification-bot-run:
-	AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-	"${OUT_DIR}/notification-bot"
+docker-run:
+	docker run -it --rm --env-file=.env clair
 
-notification-bot-run-noenv:
-	"${OUT_DIR}/notification-bot"
+docker-dev: docker-build docker-run
 
 # Lambda --------------------
 lambda-build:
@@ -60,21 +58,3 @@ lambda-build-and-upload: lambda-build
 			--function-name clair-sqs-lambda \
 			--zip-file fileb://function.zip \
 			--region ${AWS_SQS_REGION}
-
-# Server --------------------
-server-build:
-	${GO_BUILD_CMD} -o "${OUT_DIR}/server" cmd/server/main.go
-
-server-run:
-	go run ${GO_ARGS} cmd/server/main.go
-
-# Website --------------------
-website-build:
-	cd web; yarn; yarn export
-	rm -rf website/web-ui
-	mv -v  web/out website/web-ui
-	find website/web-ui/ -empty -type d -delete
-	${GO_BUILD_CMD} -o "${OUT_DIR}/clair-website" website/main.go
-
-website-run:
-	go run ${GO_ARGS} website/main.go
