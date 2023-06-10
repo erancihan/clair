@@ -34,6 +34,16 @@ func (executor *ScheduledExecutor) close() {
 	executor.ticker.Stop()
 }
 
+func (executor ScheduledExecutor) StartLoop(task func() bool) {
+	executor.Start(func() {
+		for {
+			if isDone := task(); isDone {
+				return
+			}
+		}
+	})
+}
+
 func (executor ScheduledExecutor) Start(task func()) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
