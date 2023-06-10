@@ -28,3 +28,6 @@ make-build-*
 
 # Dependency directories (remove the comment below to include it)
 vendor/
+
+# ignore awkward go template embedding stuff
+cmd/**/*.tmpl
