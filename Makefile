@@ -1,6 +1,6 @@
 #!make
 include .env
-export $(shell sed 's/=.*//' .env)
+export $(shell sed -e '/^\#/d' -e 's/=.*//' .env)
 
 .PHONY: build
 
@@ -19,9 +19,7 @@ build-linux-amd64:
 		${GO_BUILD_CMD} -o "${OUTFILE}" cmd/clair/main.go
 
 devel:
-	AWS_ACCESS_KEY_ID=${clairSQS_AWS_ACCESS_KEY_ID} \
-	AWS_SECRET_ACCESS_KEY=${clairSQS_AWS_SECRET_ACCESS_KEY} \
-		go run ${GO_ARGS} cmd/clair/main.go
+	go run ${GO_ARGS} cmd/clair/main.go
 
 dev: devel
 
@@ -29,9 +27,7 @@ devel-noenv:
 	go run ${GO_ARGS} cmd/clair/main.go
 
 run:
-	AWS_ACCESS_KEY_ID=${clairSQS_AWS_ACCESS_KEY_ID} \
-	AWS_SECRET_ACCESS_KEY=${clairSQS_AWS_SECRET_ACCESS_KEY} \
-		"${OUTFILE}" --verbose
+	"${OUTFILE}" --verbose
 
 run-noenv:
 	${OUTFILE} --verbose
