@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"time"
 
 	awssqshandler "clair/internal/aws-sqs-handler"
@@ -107,7 +108,8 @@ func main() {
 	// start the server
 	port := utils.GetEnv("PORT", "8080")
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		data := map[string]string{
 			"Region": os.Getenv("FLY_REGION"),
 		}
@@ -115,6 +117,28 @@ func main() {
 		t.ExecuteTemplate(w, "index.html.tmpl", data)
 	})
 
-	log.Println("listening on", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Println("Server listening on", port)
+		log.Fatal(server.ListenAndServe())
+	}()
+
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, os.Interrupt, os.Kill)
+
+	<-sc
+	log.Println("Shutting down...")
+
+	// TODO: gracefully shutdown properly
+	if err := server.Shutdown(nil); err != nil {
+		log.Fatal(err)
+		defer os.Exit(1)
+	}
+
+	log.Println("Graceful shutdown")
+	os.Exit(0)
 }
