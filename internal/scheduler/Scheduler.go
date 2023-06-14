@@ -5,6 +5,7 @@ import (
 	discordbot "clair/internal/discord-bot"
 	timedexecutor "clair/internal/timed-executor"
 	"clair/internal/utils"
+	"log"
 	"strconv"
 	"time"
 
@@ -77,9 +78,9 @@ func (s *Scheduler) ScheduleSQS(channelId string, delay time.Duration) {
 
 		return true
 	})
-	defer s.executor.Close()
 }
 
 func (s *Scheduler) Close() {
+	log.Println("Closing scheduler")
 	s.executor.Close()
 }
