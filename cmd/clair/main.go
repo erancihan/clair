@@ -23,6 +23,8 @@ var (
 	SENTRY_DSN string = ""
 
 	DISCORD_CHANNEL_ID string = ""
+
+	ENVIRONMENT string = utils.GetEnv("ENVIRONMENT", "development")
 )
 
 //go:generate cp -r ../../templates ./
@@ -66,6 +68,13 @@ func main() {
 	err = sentry.Init(sentry.ClientOptions{
 		Dsn:              utils.GetEnv("SENTRY_DSN", SENTRY_DSN),
 		TracesSampleRate: 0.1,
+		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+			if ENVIRONMENT == "development" {
+				return nil
+			}
+
+			return event
+		},
 	})
 	if err != nil {
 		log.Fatalf("Failed sentry.Init: %s\n", err)
