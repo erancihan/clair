@@ -21,6 +21,10 @@ type SQSJsonMessage struct {
 	Embed   *SQSJsonMessageEmbed
 }
 
+func (s *SQSJsonMessage) String() string {
+	return s.Content
+}
+
 func v0(pMsg *discordgo.MessageSend, pJsonStr string) {
 	payload := SQSJsonMessage{}
 	json.Unmarshal([]byte(pJsonStr), &payload)
@@ -40,8 +44,11 @@ func v0(pMsg *discordgo.MessageSend, pJsonStr string) {
 			pMsg.Embeds[0].Description = payload.Embed.Description
 		}
 		if payload.Embed.Image != "" {
-			pMsg.Embeds[0].Image = &discordgo.MessageEmbedImage{
-				URL: payload.Embed.Image,
+			// check if image url starts with http
+			if payload.Embed.Image[:4] == "http" {
+				pMsg.Embeds[0].Image = &discordgo.MessageEmbedImage{
+					URL: payload.Embed.Image,
+				}
 			}
 		}
 		if payload.Embed.Color != "" {

@@ -1,10 +1,10 @@
-package scheduler
+package clair
 
 import (
 	awssqshandler "clair/internal/aws-sqs-handler"
 	discordbot "clair/internal/discord-bot"
 	timedexecutor "clair/internal/timed-executor"
-	"clair/internal/utils"
+	utils "clair/internal/utils"
 	"log"
 	"strconv"
 	"time"
@@ -21,7 +21,7 @@ type Scheduler struct {
 	executor timedexecutor.ScheduledExecutor
 }
 
-func New(
+func NewScheduler(
 	discordbot *discordbot.DiscordBot,
 	sqs *awssqshandler.AWSSQSHandler,
 	dropOlderThanMilli int64,
@@ -68,6 +68,7 @@ func (s *Scheduler) ScheduleSQS(channelId string, delay time.Duration) {
 		_, err = s.discordbot.MessageEmbed(channelId, response)
 		if err != nil {
 			// this _should be_ a recoverable error
+			log.Println(err)
 			sentry.CaptureException(err)
 			return true
 		}

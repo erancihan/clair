@@ -6,25 +6,20 @@ import (
 	"html/template"
 	"io"
 	"log"
-	"net/http"
 	"os"
-	"os/signal"
 	"time"
 
 	awssqshandler "clair/internal/aws-sqs-handler"
+	"clair/internal/clair"
 	discordbot "clair/internal/discord-bot"
-	"clair/internal/scheduler"
+	"clair/internal/server"
 	utils "clair/internal/utils"
 
 	sentry "github.com/getsentry/sentry-go"
 )
 
 var (
-	SENTRY_DSN string = ""
-
 	DISCORD_CHANNEL_ID string = ""
-
-	ENVIRONMENT string = utils.GetEnv("ENVIRONMENT", "development")
 )
 
 //go:generate cp -r ../../templates ./
@@ -34,8 +29,6 @@ var resources embed.FS
 var t = template.Must(template.ParseFS(resources, "templates/*"))
 
 func main() {
-	var err error
-
 	// parse flags
 	delay := flag.Int("delay", 1, "Delay value in seconds")
 	isVerbose := flag.Bool("verbose", false, "Verbose output")
@@ -64,30 +57,7 @@ func main() {
 		}
 	}
 
-	// setup Sentry
-	err = sentry.Init(sentry.ClientOptions{
-		Dsn:              utils.GetEnv("SENTRY_DSN", SENTRY_DSN),
-		TracesSampleRate: 0.1,
-		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
-			if ENVIRONMENT == "development" {
-				return nil
-			}
-
-			return event
-		},
-	})
-	if err != nil {
-		log.Fatalf("Failed sentry.Init: %s\n", err)
-	}
-	// Flush buffered events before the program terminates.
-	defer func() {
-		err := recover()
-
-		if err != nil {
-			sentry.CurrentHub().Recover(err)
-			sentry.Flush(5 * time.Second)
-		}
-	}()
+	clair.SetupSentry()
 
 	log.Printf("Setting up with delay: %v\n", *delay)
 
@@ -104,7 +74,7 @@ func main() {
 	// setup SQS Handler
 	sqs := awssqshandler.New()
 
-	sch := scheduler.New(
+	sch := clair.NewScheduler(
 		&discord,
 		&sqs,
 		time.Now().Add(-2*time.Hour).UnixMilli(),
@@ -114,40 +84,9 @@ func main() {
 
 	log.Println("Now processing SQS messages")
 
-	// start the server
-	port := utils.GetEnv("PORT", "8080")
+	s := server.NewServer()
+	s.Templates = t
+	s.ListenAndServe()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		data := map[string]string{
-			"Region": os.Getenv("FLY_REGION"),
-		}
-
-		t.ExecuteTemplate(w, "index.html.tmpl", data)
-	})
-
-	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
-	}
-
-	go func() {
-		log.Println("Server listening on", port)
-		log.Fatal(server.ListenAndServe())
-	}()
-
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, os.Interrupt, os.Kill)
-
-	<-sc
-	log.Println("Shutting down...")
-
-	// TODO: gracefully shutdown properly
-	if err := server.Shutdown(nil); err != nil {
-		log.Fatal(err)
-		defer os.Exit(1)
-	}
-
-	log.Println("Graceful shutdown")
 	os.Exit(0)
 }
