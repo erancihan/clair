@@ -54,16 +54,11 @@ func (executor ScheduledExecutor) Start(task func()) {
 			log.Println("Scheduler stopped")
 		}()
 
-		initial := true
+		log.Println("Scheduler started")
 
 		for {
 			select {
 			case <-executor.ticker.C:
-				if initial {
-					executor.ticker.Stop()
-					executor.ticker = *time.NewTicker(executor.delay)
-					initial = false
-				}
 
 				go task()
 
