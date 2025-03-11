@@ -10,9 +10,9 @@ import (
 	"time"
 
 	awssqshandler "clair/internal/aws-sqs-handler"
-	"clair/internal/clair"
+	clair "clair/internal/clair"
 	discordbot "clair/internal/discord-bot"
-	"clair/internal/server"
+	server "clair/internal/server"
 	utils "clair/internal/utils"
 
 	sentry "github.com/getsentry/sentry-go"
@@ -26,7 +26,7 @@ var (
 //go:embed templates/*
 var resources embed.FS
 
-var t = template.Must(template.ParseFS(resources, "templates/*"))
+var templates = template.Must(template.ParseFS(resources, "templates/*"))
 
 func main() {
 	// parse flags
@@ -74,18 +74,28 @@ func main() {
 	// setup SQS Handler
 	sqs := awssqshandler.New()
 
-	sch := clair.NewScheduler(
-		&discord,
-		&sqs,
-		time.Now().Add(-2*time.Hour).UnixMilli(),
+	// define event loop
+	eventLoop := &clair.EventLoop{
+		DiscordBot: &discord,
+		SQS:        &sqs,
+		TTL:        time.Now().Add(-2 * time.Hour).UnixMilli(),
+	}
+
+	// setup scheduler
+	sch := clair.NewScheduler()
+	sch.ScheduleSQS(
+		func() bool {
+			return eventLoop.Loop(DISCORD_CHANNEL_ID)
+		},
+		time.Duration(*delay)*time.Second,
 	)
-	sch.ScheduleSQS(DISCORD_CHANNEL_ID, time.Duration(*delay)*time.Second)
 	defer sch.Close()
 
 	log.Println("Now processing SQS messages")
 
+	// setup server
 	s := server.NewServer()
-	s.Templates = t
+	s.Templates = templates
 	s.ListenAndServe()
 
 	os.Exit(0)
