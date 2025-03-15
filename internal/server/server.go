@@ -1,29 +1,44 @@
 package server
 
 import (
-	"clair/internal/utils"
-	"html/template"
-	"log"
+	"context"
+	"embed"
+	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
+	"text/template"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
-type Server struct {
+type backend struct {
 	Templates *template.Template
 }
 
-func NewServer() *Server {
-	return &Server{
-		Templates: nil,
+//go:generate cp -r ../../templates ./
+//go:embed templates/*
+var resources embed.FS
+
+var templates = template.Must(template.ParseFS(resources, "templates/*"))
+
+func NewBackEnd(ctx context.Context, logger *zap.Logger, redis *redis.Client, pool *pgxpool.Pool) *backend {
+	return &backend{
+		Templates: templates,
 	}
 }
 
-func (s *Server) ListenAndServe() {
-	// start the server
-	port := utils.GetEnv("PORT", "8080")
+func (s *backend) Server(port int) *http.Server {
+	return &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: s.Routes(),
+	}
+}
 
+func (s *backend) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		data := map[string]string{
 			"Region": os.Getenv("FLY_REGION"),
@@ -32,28 +47,10 @@ func (s *Server) ListenAndServe() {
 		s.Templates.ExecuteTemplate(w, "index.html.tmpl", data)
 	})
 
-	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
-	}
+	mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hello, World!"))
+	})
 
-	go func() {
-		log.Println("Server listening on", port)
-		log.Fatal(server.ListenAndServe())
-	}()
-
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, os.Interrupt, os.Kill)
-
-	<-sc
-	log.Println("Shutting down...")
-
-	// TODO: gracefully shutdown properly
-	if err := server.Shutdown(nil); err != nil {
-		log.Fatal(err)
-		defer os.Exit(1)
-	}
-
-	log.Println("Graceful shutdown")
-
+	return mux
 }

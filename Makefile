@@ -12,7 +12,8 @@ GO_BUILD_CMD := go build ${GO_ARGS}
 GNUMAKEFLAGS=-j3
 
 build:
-	${GO_BUILD_CMD} -o "${OUTFILE}" cmd/clair/main.go
+	go generate ./...
+	go build ${GO_ARGS} -o "${OUTFILE}" cmd/clair/main.go
 
 build-linux-amd64:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
@@ -35,6 +36,7 @@ run-noenv:
 all: build
 
 # docker
+docker: docker-build
 docker-build:
 	docker build -t clair .
 
@@ -42,15 +44,3 @@ docker-run:
 	docker run -it --rm --env-file=.env clair
 
 docker-dev: docker-build docker-run
-
-# Lambda --------------------
-lambda-build:
-	${GO_BUILD_CMD} -o "${OUT_DIR}/lambda" cmd/lambda/main.go
-
-lambda-build-and-upload: lambda-build
-	cd ${OUT_DIR}; zip function.zip lambda
-	cd ${OUT_DIR}; \
-		aws lambda update-function-code \
-			--function-name clair-sqs-lambda \
-			--zip-file fileb://function.zip \
-			--region ${AWS_SQS_REGION}

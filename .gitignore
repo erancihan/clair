@@ -30,4 +30,4 @@ make-build-*
 vendor/
 
 # ignore awkward go template embedding stuff
-cmd/**/*.tmpl
+internal/server/templates/

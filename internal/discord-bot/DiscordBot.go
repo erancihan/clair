@@ -1,11 +1,9 @@
 package discordbot
 
 import (
-	"log"
-
-	"clair/internal/utils"
-
 	"github.com/bwmarrin/discordgo"
+	"github.com/erancihan/clair/internal/utils"
+	"go.uber.org/zap"
 )
 
 var (
@@ -16,36 +14,41 @@ var (
 
 type DiscordBot struct {
 	session *discordgo.Session
+	logger  *zap.Logger
 }
 
 func New() DiscordBot {
+	logger := utils.NewLogger("discord-bot")
+	defer func() { _ = logger.Sync() }()
+
 	authKey := utils.GetEnv("DISCORD_BOT_AUTH_KEY", DISCORD_BOT_AUTH_KEY)
 	if authKey == "" {
-		log.Panicln("BOT Auth Key cannot be empty")
+		logger.Fatal("BOT Auth Key cannot be empty")
 	}
 
 	sess, err := discordgo.New("Bot " + authKey)
 	if err != nil {
-		log.Panicf("Invalid bot parameters: %v", err)
+		logger.Sugar().Fatalf("Invalid bot parameters: %v", err)
 	}
 	sess.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
-		log.Println("Bot is up!")
+		logger.Info("Bot is up!")
 	})
 
 	bot := DiscordBot{
 		session: sess,
+		logger:  logger,
 	}
 
 	return bot
 }
 
 func (bot *DiscordBot) Connect() error {
-	log.Println("Discord Bot Connecting...")
+	bot.logger.Info("Discord Bot Connecting...")
 	return bot.session.Open()
 }
 
 func (bot *DiscordBot) Disconnect() error {
-	log.Println("Discord Bot Disconnecting...")
+	bot.logger.Info("Discord Bot Disconnecting...")
 	return bot.session.Close()
 }
 

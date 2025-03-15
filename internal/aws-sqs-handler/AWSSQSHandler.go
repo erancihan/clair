@@ -3,7 +3,7 @@ package awssqshandler
 import (
 	"log"
 
-	"clair/internal/utils"
+	utils "github.com/erancihan/clair/internal/utils"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"

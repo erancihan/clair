@@ -1,10 +1,10 @@
 package clair
 
 import (
-	"clair/internal/utils"
 	"log"
 	"time"
 
+	utils "github.com/erancihan/clair/internal/utils"
 	"github.com/getsentry/sentry-go"
 )
 

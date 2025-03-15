@@ -1,16 +1,15 @@
-FROM golang:1.24 AS base
+# create binary
+FROM golang:1.24 AS builder
 
-WORKDIR /go/src/app
-COPY go.mod go.sum ./
-RUN go mod download
-
-FROM base AS builder
 WORKDIR /go/src/app
 COPY . ./
+COPY go.mod go.sum ./
 RUN go generate ./...
+RUN go mod download
 RUN CGO_ENABLED=0 GOOS=linux go build -v -o /go/bin/clair.bin cmd/clair/main.go
 
-FROM alpine:latest
+# create final image
+FROM alpine:3.21
 
 ARG AWS_ACCESS_KEY_ID
 ARG AWS_SECRET_ACCESS_KEY
