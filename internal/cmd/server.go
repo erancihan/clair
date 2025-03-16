@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/erancihan/clair/internal/database"
 	"github.com/erancihan/clair/internal/server"
 	"github.com/erancihan/clair/internal/utils"
 	"github.com/spf13/cobra"
@@ -29,12 +30,17 @@ func ServerCmd(ctx context.Context) *cobra.Command {
 			defer func() { _ = logger.Sync() }()
 
 			// database configuration
-			// TODO:
+			db, err := database.New(ctx)
+			if err != nil {
+				logger.Error("failed to connect database", zap.Error(err))
+				return nil
+			}
+			// TODO: gorm defer
 
 			// redis configuration
 			// TODO:
 
-			bnd := server.NewBackEnd(ctx, nil, nil, nil)
+			bnd := server.NewBackEnd(ctx, nil, nil, db)
 			srv := bnd.Server(port)
 
 			go func() {
