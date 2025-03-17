@@ -7,7 +7,7 @@ import (
 )
 
 func NewLogger(service string) *zap.Logger {
-	env := os.Getenv("ENV")
+	env := os.Getenv("APP_ENV")
 
 	zapOptions := zap.Fields(
 		zap.String("env", env),

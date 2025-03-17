@@ -10,7 +10,7 @@ import (
 	"text/template"
 
 	"github.com/erancihan/clair/internal/database/models"
-	"github.com/go-redis/redis/v8"
+	"github.com/valkey-io/valkey-go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -18,7 +18,9 @@ import (
 type backend struct {
 	Templates *template.Template
 
-	conn *gorm.DB
+	conn   *gorm.DB
+	logger *zap.Logger
+	valkey valkey.Client
 }
 
 //go:generate cp -r ../../templates ./
@@ -27,10 +29,13 @@ var resources embed.FS
 
 var templates = template.Must(template.ParseFS(resources, "templates/*"))
 
-func NewBackEnd(ctx context.Context, logger *zap.Logger, redis *redis.Client, pool *gorm.DB) *backend {
+func NewBackEnd(ctx context.Context, logger *zap.Logger, valkey valkey.Client, pool *gorm.DB) *backend {
 	return &backend{
 		Templates: templates,
-		conn:      pool,
+
+		conn:   pool,
+		logger: logger,
+		valkey: valkey,
 	}
 }
 

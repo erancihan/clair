@@ -22,7 +22,7 @@ func SchedulerCmd(ctx context.Context) *cobra.Command {
 			// database configuration
 			// TODO:
 
-			// redis configuration
+			// ValKey configuration
 			// TODO:
 
 			// scheduler configuration

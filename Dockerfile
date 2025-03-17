@@ -1,12 +1,14 @@
 # create binary
-FROM golang:1.24 AS builder
+FROM golang:1.24-alpine AS builder
+
+RUN apk --no-cache add gcc git musl-dev
 
 WORKDIR /go/src/app
 COPY . ./
 COPY go.mod go.sum ./
 RUN go generate ./...
 RUN go mod download
-RUN CGO_ENABLED=0 GOOS=linux go build -v -o /go/bin/clair.bin cmd/clair/main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -tags netgo -a -v -o /go/bin/clair.bin cmd/clair/main.go
 
 # create final image
 FROM alpine:3.21
@@ -23,4 +25,3 @@ ARG SENTRY_DSN
 
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /go/bin/clair.bin ./clair.bin
-CMD ["./clair.bin", "-delay=60"]

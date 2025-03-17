@@ -16,17 +16,17 @@ func ServerCmd(ctx context.Context) *cobra.Command {
 	var port int
 
 	cmd := &cobra.Command{
-		Use:  "api",
+		Use:  "server",
 		Args: cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			port = 4000
 			// port configuration
-			if os.Getenv("PORT") != "" {
-				port, _ = strconv.Atoi(os.Getenv("PORT"))
+			if os.Getenv("SERVER_PORT") != "" {
+				port, _ = strconv.Atoi(os.Getenv("SERVER_PORT"))
 			}
 
 			// logger configuration
-			logger := utils.NewLogger("api")
+			logger := utils.NewLogger("server")
 			defer func() { _ = logger.Sync() }()
 
 			// database configuration
@@ -37,17 +37,18 @@ func ServerCmd(ctx context.Context) *cobra.Command {
 			}
 			// TODO: gorm defer
 
-			// redis configuration
-			// TODO:
+			// ValKey configuration
+			valkey := utils.NewValKeyClient(ctx)
+			defer func() { valkey.Close() }()
 
-			bnd := server.NewBackEnd(ctx, nil, nil, db)
+			bnd := server.NewBackEnd(ctx, logger, valkey, db)
 			srv := bnd.Server(port)
 
 			go func() {
 				_ = srv.ListenAndServe()
 			}()
 
-			logger.Info("API server started", zap.Int("port", port))
+			logger.Info("Backend server started", zap.Int("port", port))
 
 			<-ctx.Done()
 
