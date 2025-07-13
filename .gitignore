@@ -8,7 +8,7 @@
 *.log
 
 # Build folder
-make-build-*
+builds/*
 
 # Database
 *.db
@@ -28,6 +28,10 @@ make-build-*
 
 # Dependency directories (remove the comment below to include it)
 vendor/
+node_modules
 
 # ignore awkward go template embedding stuff
 internal/server/templates/
+
+# ignore templ generated files
+web/**/*_templ.go

@@ -2,37 +2,26 @@ package server
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"text/template"
 
+	"github.com/a-h/templ"
 	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/web"
 	"github.com/valkey-io/valkey-go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 type backend struct {
-	Templates *template.Template
-
 	conn   *gorm.DB
 	logger *zap.Logger
 	valkey valkey.Client
 }
 
-//go:generate cp -r ../../templates ./
-//go:embed templates/*
-var resources embed.FS
-
-var templates = template.Must(template.ParseFS(resources, "templates/*"))
-
 func NewBackEnd(ctx context.Context, logger *zap.Logger, valkey valkey.Client, pool *gorm.DB) *backend {
 	return &backend{
-		Templates: templates,
-
 		conn:   pool,
 		logger: logger,
 		valkey: valkey,
@@ -50,17 +39,19 @@ func (s *backend) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		data := map[string]string{
-			"Region": os.Getenv("FLY_REGION"),
-		}
-
-		s.Templates.ExecuteTemplate(w, "index.html.tmpl", data)
+		templ.Handler(web.Base("Clair", web.Home())).ServeHTTP(w, r)
 	})
 
-	mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello, World!"))
+	mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve static files from the embedded filesystem
+		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
 	})
+
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		templ.Handler(web.Base("Clair", web.Login())).ServeHTTP(w, r)
+	})
+
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {})
 
 	// users list
 	mux.HandleFunc("/v1/users", func(w http.ResponseWriter, r *http.Request) {

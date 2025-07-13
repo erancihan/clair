@@ -39,7 +39,11 @@ func ServerCmd(ctx context.Context) *cobra.Command {
 
 			// ValKey configuration
 			valkey := utils.NewValKeyClient(ctx)
-			defer func() { valkey.Close() }()
+			defer func() {
+				if valkey != nil {
+					valkey.Close()
+				}
+			}()
 
 			bnd := server.NewBackEnd(ctx, logger, valkey, db)
 			srv := bnd.Server(port)

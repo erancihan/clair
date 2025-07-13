@@ -62,9 +62,7 @@ func Execute(ctx context.Context) int {
 	rootCmd.AddCommand(SchedulerCmd(ctx))
 
 	go func() {
-		port := rootCmd.PersistentFlags().Lookup("port").Value.String()
-
-		_ = http.ListenAndServe(":"+port, nil)
+		_ = http.ListenAndServe("localhost:6060", nil)
 	}()
 
 	if err := rootCmd.ExecuteContext(ctx); err != nil {

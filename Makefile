@@ -11,22 +11,29 @@ GO_BUILD_CMD := go build ${GO_ARGS}
 
 GNUMAKEFLAGS=-j3
 
-build:
-	go generate ./...
-	go build ${GO_ARGS} -o "${OUTFILE}" cmd/clair/main.go
 
+all: build
+
+deps: 
+	go mod download
+
+assets: PATH:=$(PWD)/node_modules/.bin:$(PATH)
+assets: deps
+	npm run css
+	go generate ./...
+
+build: assets
+	go build -o ./builds/clair ./cmd/clair
+
+dev-server: build
+	./builds/clair server
+
+# ----------------------
 build-linux-amd64:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 		${GO_BUILD_CMD} -o "${OUTFILE}" cmd/clair/main.go
 
-devel:
-	go run ${GO_ARGS} cmd/clair/main.go
-
-dev: devel
-
-devel-noenv:
-	go run ${GO_ARGS} cmd/clair/main.go
-
+# ----------------------
 run:
 	"${OUTFILE}" --verbose
 

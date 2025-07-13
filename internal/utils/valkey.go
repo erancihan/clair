@@ -9,20 +9,25 @@ import (
 )
 
 func NewValKeyClient(ctx context.Context) valkey.Client {
-	valkeyPort := "6379"
-	valkeyHost := "127.0.0.1"
-	if os.Getenv("VALKEY_PORT") != "" {
-		valkeyPort = os.Getenv("VALKEY_PORT")
+	logger := NewLogger("valkey")
+
+	valkeyPort := os.Getenv("VALKEY_PORT") // "6379"
+	valkeyHost := os.Getenv("VALKEY_HOST") // "127.0.0.1"
+
+	// If both VALKEY_PORT and VALKEY_HOST are not set, return nil
+	if valkeyPort == "" && valkeyHost == "" {
+		logger.Info("VALKEY_PORT and VALKEY_HOST are not set, skipping Valkey client creation")
+		return nil
 	}
-	if os.Getenv("VALKEY_HOST") != "" {
-		valkeyHost = os.Getenv("VALKEY_HOST")
+
+	if valkeyPort == "" && valkeyHost != "" {
+		valkeyPort = "6379"
 	}
 
 	options := valkey.ClientOption{
 		InitAddress: []string{valkeyHost + ":" + valkeyPort},
 	}
 
-	logger := NewLogger("valkey")
 	defer func() { _ = logger.Sync() }()
 
 	client, err := valkey.NewClient(options)
