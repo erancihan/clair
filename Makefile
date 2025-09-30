@@ -4,7 +4,7 @@ export $(shell sed -e '/^\#/d' -e 's/=.*//' .env)
 
 .PHONY: build
 
-OUT_DIR := ./make-build-release
+OUT_DIR := ./builds
 OUTFILE := ${OUT_DIR}/clair.bin
 GO_ARGS := -mod vendor
 GO_BUILD_CMD := go build ${GO_ARGS}
