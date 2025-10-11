@@ -1,6 +1,7 @@
 #!make
 include .env
 export $(shell sed -e '/^\#/d' -e 's/=.*//' .env)
+export GOWORKDIR=./
 
 .PHONY: build
 
@@ -51,3 +52,9 @@ docker-run:
 	docker run -it --rm --env-file=.env clair
 
 docker-dev: docker-build docker-run
+
+# tidy and vendor
+tidy:
+	go mod tidy
+	go mod vendor
+	

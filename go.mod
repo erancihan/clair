@@ -1,10 +1,9 @@
 module github.com/erancihan/clair
 
-go 1.24.0
-
-toolchain go1.24.5
+go 1.25
 
 require (
+	github.com/a-h/templ v0.3.906
 	github.com/aws/aws-lambda-go v1.47.0
 	github.com/aws/aws-sdk-go v1.55.6
 	github.com/bwmarrin/discordgo v0.28.1
@@ -21,7 +20,6 @@ require (
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/a-h/parse v0.0.0-20250122154542-74294addb73e // indirect
-	github.com/a-h/templ v0.3.906 // indirect
 	github.com/air-verse/air v1.62.0 // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/bep/godartsass/v2 v2.5.0 // indirect
@@ -49,7 +47,6 @@ require (
 	github.com/spf13/afero v1.14.0 // indirect
 	github.com/spf13/cast v1.8.0 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
-	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/tdewolff/parse/v2 v2.8.1 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
@@ -61,7 +58,6 @@ require (
 	golang.org/x/text v0.25.0 // indirect
 	golang.org/x/tools v0.33.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
 tool (
