@@ -8,6 +8,7 @@ import (
 
 	"github.com/a-h/templ"
 	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/utils"
 	"github.com/erancihan/clair/web"
 	"github.com/valkey-io/valkey-go"
 	"go.uber.org/zap"
@@ -35,7 +36,7 @@ func (s *backend) Server(port int) *http.Server {
 	}
 }
 
-func (s *backend) Routes() *http.ServeMux {
+func (s *backend) Routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -70,5 +71,7 @@ func (s *backend) Routes() *http.ServeMux {
 		json.NewEncoder(w).Encode(users)
 	})
 
-	return mux
+	handler := utils.RegisterLoggerMiddleware(mux)
+
+	return handler
 }
