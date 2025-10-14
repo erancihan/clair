@@ -17,3 +17,7 @@ func Home() templ.Component {
 func Login() templ.Component {
 	return pages.LoginPage()
 }
+
+func NotFound() templ.Component {
+	return pages.NotFound()
+}

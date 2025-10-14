@@ -12,10 +12,20 @@ templ base(title string, body templ.Component) {
     <link rel="stylesheet" href="/static/css/main.css">
 </head>
 
-<body>
-    <main>
+<body class="flex flex-col min-h-screen dark dark:bg-gray-900 dark:text-white">
+    <main class="flex flex-1">
         @body
     </main>
+    <div class="flex flex-inline mx-auto w-full hidden" x-data="{ alpineOk: true }"
+        x-bind:class="{ 'hidden': !alpineOk }">
+        <div class="flex flex-inline mx-auto w-auto gap-1 text-xs h-5 align-baseline">
+            <p>made with </p>
+            <img class="h-4" src="https://alpinejs.dev/alpine_long.svg" alt="Alpine.js">
+            <p> & </p>
+            <img class="h-4 w-auto fill-sky-400 text-sky-400"
+                src="https://tailwindcss.com/plus-assets/img/logos/mark.svg?color=cyan&shade=400" alt="TailwindCSS" />
+        </div>
+    </div>
 </body>
 
 </html>
