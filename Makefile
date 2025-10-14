@@ -26,8 +26,9 @@ assets: deps
 build: assets
 	go build -o ./builds/clair ./cmd/clair
 
-dev-server: build
-	./builds/clair server
+# dev with air. air already calls build
+dev: 
+	go tool air
 
 # ----------------------
 build-linux-amd64:
