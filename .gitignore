@@ -35,3 +35,4 @@ internal/server/templates/
 
 # ignore templ generated files
 web/**/*_templ.go
+web/static/css/main.css
