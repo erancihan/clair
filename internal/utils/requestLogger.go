@@ -141,11 +141,12 @@ func RegisterLoggerMiddleware(handler http.Handler) http.Handler {
 		handler.ServeHTTP(rw, r)
 
 		fmt.Printf(
-			"%v  %s%s %s %#v\n",
+			"%v  %s%s %s %-75s %#v\n",
 			start.Format("2006-01-02T15:04:05.000Z0700"),
 			colorizeMethod(r.Method),
 			colorizeStatus(rw.statusCode),
 			colorizeDuration(time.Since(start)),
+			r.Header.Get("Accept"),
 			r.URL.Path,
 		)
 	})
