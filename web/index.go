@@ -11,7 +11,7 @@ func Base(title string, body templ.Component) templ.Component {
 }
 
 func Home() templ.Component {
-	return home()
+	return pages.Home()
 }
 
 func Login() templ.Component {

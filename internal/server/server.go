@@ -55,6 +55,10 @@ func (s *backend) Routes() http.Handler {
 		// Serve static files from the embedded filesystem
 		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
 	})
+	mux.HandleFunc("GET /public/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve public files from the embedded filesystem
+		http.StripPrefix("/public/", http.FileServer(http.Dir(web.Public()))).ServeHTTP(w, r)
+	})
 
 	/**
 	 * Authentication related routes
