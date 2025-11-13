@@ -1,3 +1,12 @@
+# make css files
+FROM node:24-alpine AS css-builder
+
+WORKDIR /app
+COPY . ./
+
+RUN npm install
+RUN npm run css
+
 # create binary
 FROM golang:1.25-alpine AS builder
 
@@ -6,8 +15,12 @@ RUN apk --no-cache add gcc git musl-dev
 WORKDIR /go/src/app
 COPY . ./
 COPY go.mod go.sum ./
-RUN go generate ./...
+
+COPY --from=css-builder /app/internal/web/static/css/ ./internal/web/static/css/
+
 RUN go mod download
+RUN go generate ./...
+
 RUN CGO_ENABLED=1 GOOS=linux go build -tags netgo -a -v -o /go/bin/clair.bin cmd/clair/main.go
 
 # create final image
