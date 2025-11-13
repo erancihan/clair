@@ -16,7 +16,7 @@ WORKDIR /go/src/app
 COPY . ./
 COPY go.mod go.sum ./
 
-COPY --from=css-builder /app/internal/web/static/css/ ./internal/web/static/css/
+COPY --from=css-builder /app/internal/web/static/css ./internal/web/static/css/
 
 RUN go mod download
 RUN go generate ./...

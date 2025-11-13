@@ -15,11 +15,11 @@ gulp.task('css', function () {
                 require('cssnano')()
             ]))
         .pipe(require('gulp-rename')({ extname: '.css' }))
-        .pipe(gulp.dest('web/static/css'));
+        .pipe(gulp.dest('./internal/web/static/css'));
 });
 
 gulp.task('watch', function () {
-    gulp.watch('web/**/*.templ', gulp.parallel('css', 'go-server'));
+    gulp.watch('./internal/web/**/*.templ', gulp.parallel('css', 'go-server'));
 });
 
 gulp.task('default', gulp.series('css', 'watch'));

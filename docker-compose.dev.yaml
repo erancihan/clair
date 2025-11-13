@@ -1,30 +1,29 @@
 services:
-  valkey:
-    image: valkey/valkey:8
-    ports:
-      - 6379:6379
-
-  server:
+  clair:
     build:
-      context: .
+      context: ./
       dockerfile: Dockerfile
-    depends_on:
-      - valkey
     ports:
       - "4000:4000"
     volumes:
-      - database:/opt/clair/database
-    env_file:
-      - .env
+      - clair-data:/opt/clair/database
+      - clair-public:/opt/clair/public
+    env_file: ".env"
     environment:
-      - NODE_ENV=development
       - DB_FOLDER=/opt/clair/database
+      - PUBLIC_PATH=/opt/clair/public
     command: ./clair.bin server
 
 volumes:
-  database:
+  clair-data:
     driver: local
     driver_opts:
       type: none
-      device: .opt/clair/database
+      device: .opt/clair/data
+      o: bind
+  clair-public:
+    driver: local
+    driver_opts:
+      type: none
+      device: .opt/clair/public
       o: bind
