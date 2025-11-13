@@ -7,7 +7,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/erancihan/clair/internal/database/models"
 	server_context "github.com/erancihan/clair/internal/server/context"
-	"github.com/erancihan/clair/web"
+	"github.com/erancihan/clair/internal/web"
 	"gorm.io/gorm"
 )
 

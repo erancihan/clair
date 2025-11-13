@@ -21,7 +21,7 @@ func Public() string {
 	// get public path from environment variable
 	publicPath := os.Getenv("PUBLIC_PATH")
 	if publicPath == "" {
-		publicPath = "web/public"
+		publicPath = "internal/web/public"
 	}
 
 	return publicPath

@@ -7,7 +7,7 @@ const autoprefixer = require('autoprefixer');
 // generate static css file from templ files using tailwindcss
 gulp.task('css', function () {
     return gulp
-        .src('./web/css/main.css')
+        .src('./internal/web/css/main.css')
         .pipe(
             postcss([
                 tailwindcss('./tailwind.config.js'),

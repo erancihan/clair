@@ -11,7 +11,7 @@ import (
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/utils"
-	"github.com/erancihan/clair/web"
+	"github.com/erancihan/clair/internal/web"
 	"github.com/valkey-io/valkey-go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"

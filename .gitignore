@@ -34,5 +34,5 @@ node_modules
 internal/server/templates/
 
 # ignore templ generated files
-web/**/*_templ.go
-web/static/css/main.css
+internal/web/**/*_templ.go
+internal/web/static/css/main.css

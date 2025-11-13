@@ -3,7 +3,7 @@ package web
 import (
 	"github.com/a-h/templ"
 
-	pages "github.com/erancihan/clair/web/pages"
+	pages "github.com/erancihan/clair/internal/web/pages"
 )
 
 func Base(title string, body templ.Component) templ.Component {
