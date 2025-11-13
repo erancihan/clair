@@ -1,0 +1,44 @@
+package components
+
+import icons "github.com/erancihan/clair/internal/web/icons"
+
+var iconLinkClass = "group flex text-sm font-medium text-zinc-800 transition hover:text-teal-500 dark:text-zinc-200 dark:hover:text-teal-500"
+var iconClass = "h-6 w-6 flex-none fill-zinc-500 transition group-hover:fill-teal-500"
+
+templ Socials() {
+<ul role="list inline-flex">
+    <div class="space-x-1">
+        <li class="inline-flex">
+            <a href="https://github.com/erancihan/" class={iconLinkClass}>
+                @icons.GitHubIcon(iconClass)
+            </a>
+        </li>
+        <li class="inline-flex">
+            <a href="https://gitlab.com/erancihan/" class={iconLinkClass}>
+                @icons.GitLabIcon(iconClass)
+            </a>
+        </li>
+        <li class="inline-flex">
+            <a href="https://www.linkedin.com/in/erancihan/" class={iconLinkClass}>
+                @icons.LinkedInIcon(iconClass)
+            </a>
+        </li>
+        <li class="inline-flex">
+            <a href="https://twitter.com/erancihan" class={iconLinkClass}>
+                @icons.TwitterIcon(iconClass)
+            </a>
+        </li>
+        <li class="inline-flex">
+            <a href="https://www.instagram.com/erancihan/" class={iconLinkClass}>
+                @icons.InstagramIcon(iconClass)
+            </a>
+        </li>
+    </div>
+    <li class="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-700/40">
+        <a href="mailto:erancihan@gmail.com" class={iconLinkClass}>
+            @icons.MailIcon(iconClass)
+            <span class="ml-4">erancihan@gmail.com</span>
+        </a>
+    </li>
+</ul>
+}
