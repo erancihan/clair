@@ -43,7 +43,7 @@ func (s *backend) Routes() http.Handler {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
-			// 404 Not Found
+			// return 404 page with 404 HTTP response
 			templ.Handler(web.Base("Clair", web.NotFound())).ServeHTTP(w, r)
 			return
 		}
@@ -67,9 +67,17 @@ func (s *backend) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", api_auth.AuthLogin(s.context))
 	mux.HandleFunc("POST /api/v1/auth/register", api_auth.AuthRegister(s.context))
 
-	mux.HandleFunc("GET /logout", api_auth.AuthLogout(s.context))
+	mux.HandleFunc("GET /api/v1/auth/logout", api_auth.AuthLogout(s.context))
+	mux.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
+		api_auth.AuthLogout(s.context).ServeHTTP(w, r)
+		http.Redirect(w, r, "/login", http.StatusFound)
+	})
 
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
+
+	mux.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
+		templ.Handler(web.Requester()).ServeHTTP(w, r)
+	})
 
 	// users list
 	mux.HandleFunc("GET /api/v1/users", func(w http.ResponseWriter, r *http.Request) {
