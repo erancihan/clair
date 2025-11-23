@@ -1,0 +1,204 @@
+package pages
+
+templ RequesterPage() {
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini Request Client</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <style>
+        /* Custom scrollbar for code areas */
+        textarea::-webkit-scrollbar,
+        pre::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        textarea::-webkit-scrollbar-thumb,
+        pre::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+
+        textarea::-webkit-scrollbar-track,
+        pre::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+    </style>
+
+</head>
+
+<body class="bg-gray-100 text-gray-800 h-screen flex flex-col font-sans">
+
+    <div class="container mx-auto p-4 max-w-5xl flex-grow flex flex-col">
+
+        <div class="mb-6 flex items-center justify-between">
+            <h1 class="text-2xl font-bold text-gray-700 flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-blue-600" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                REST Client
+            </h1>
+        </div>
+
+        <div class="bg-white p-4 rounded-lg shadow-sm mb-4 flex flex-col md:flex-row gap-2">
+            <select id="method"
+                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5 font-bold w-full md:w-32">
+                <option value="GET" selected>GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="DELETE">DELETE</option>
+                <option value="PATCH">PATCH</option>
+            </select>
+
+            <input type="text" id="url" placeholder="https://api.example.com/users"
+                class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 font-mono">
+
+            <button onclick="sendRequest()" id="sendBtn"
+                class="text-white bg-blue-600 hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 font-medium rounded-lg text-sm px-8 py-2.5 focus:outline-none transition-colors flex items-center justify-center min-w-[100px]">
+                Send
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 flex-grow h-full min-h-[500px]">
+
+            <div class="flex flex-col h-full">
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-sm font-semibold text-gray-600">Request Body (JSON)</label>
+                    <button onclick="formatInputJson()"
+                        class="text-xs text-blue-500 hover:text-blue-700 underline">Prettify JSON</button>
+                </div>
+                <textarea id="jsonBody" spellcheck="false"
+                    class="w-full h-full min-h-[200px] bg-gray-800 text-green-500 font-mono text-sm p-4 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none shadow-inner"
+                    placeholder="{'key': 'value'}"></textarea>
+            </div>
+
+            <div class="flex flex-col h-full">
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-sm font-semibold text-gray-600">Response</label>
+                    <div id="statusBadge" class="hidden px-2 py-0.5 rounded text-xs font-bold text-white bg-gray-400">
+                        ---
+                    </div>
+                </div>
+                <div
+                    class="relative w-full h-full bg-gray-800 rounded-lg shadow-inner overflow-hidden border border-gray-700">
+                    <div id="loader"
+                        class="hidden absolute inset-0 bg-gray-800 bg-opacity-80 flex items-center justify-center">
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    </div>
+                    <pre id="responseBody"
+                        class="w-full h-full text-sm text-gray-300 font-mono p-4 overflow-auto whitespace-pre-wrap"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function sendRequest() {
+            const url = document.getElementById('url').value;
+            const method = document.getElementById('method').value;
+            const bodyText = document.getElementById('jsonBody').value;
+            const sendBtn = document.getElementById('sendBtn');
+            const responseElem = document.getElementById('responseBody');
+            const statusBadge = document.getElementById('statusBadge');
+            const loader = document.getElementById('loader');
+
+            // UI Reset
+            responseElem.textContent = '';
+            statusBadge.classList.add('hidden');
+            loader.classList.remove('hidden');
+            sendBtn.disabled = true;
+            sendBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+            if (!url) {
+                responseElem.textContent = "Error: Please enter a URL.";
+                loader.classList.add('hidden');
+                sendBtn.disabled = false;
+                sendBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                return;
+            }
+
+            // Prepare Fetch Options
+            const options = {
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            };
+
+            // Only attach body for non-GET/HEAD methods
+            if (method !== 'GET' && method !== 'HEAD' && bodyText.trim() !== '') {
+                try {
+                    // Validate JSON
+                    const parsed = JSON.parse(bodyText);
+                    options.body = JSON.stringify(parsed);
+                } catch (e) {
+                    responseElem.textContent = "Error: Invalid JSON in request body.\n" + e.message;
+                    loader.classList.add('hidden');
+                    sendBtn.disabled = false;
+                    sendBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    return;
+                }
+            }
+
+            try {
+                const startTime = performance.now();
+                const response = await fetch(url, options);
+                const endTime = performance.now();
+                const duration = (endTime - startTime).toFixed(0);
+
+                // Handle Response Body
+                const data = await response.text();
+                let formattedData = data;
+
+                // Try to pretty print if it is JSON
+                try {
+                    formattedData = JSON.stringify(JSON.parse(data), null, 2);
+                } catch (e) {
+                    // Not JSON, keep as text
+                }
+
+                responseElem.textContent = formattedData;
+
+                // Update Status Badge
+                statusBadge.textContent = `${response.status} ${response.statusText} (${duration}ms)`;
+                statusBadge.classList.remove('hidden', 'bg-green-500', 'bg-red-500', 'bg-gray-400');
+
+                if (response.ok) {
+                    statusBadge.classList.add('bg-green-600');
+                } else {
+                    statusBadge.classList.add('bg-red-600');
+                }
+
+            } catch (error) {
+                responseElem.textContent = "Network Error: " + error.message + "\n\n(Note: Ensure the server allows CORS if fetching from a different domain)";
+                statusBadge.textContent = "Error";
+                statusBadge.classList.remove('hidden', 'bg-green-600');
+                statusBadge.classList.add('bg-red-600');
+            } finally {
+                loader.classList.add('hidden');
+                sendBtn.disabled = false;
+                sendBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        function formatInputJson() {
+            const input = document.getElementById('jsonBody');
+            try {
+                if (input.value.trim() === "") return;
+                const obj = JSON.parse(input.value);
+                input.value = JSON.stringify(obj, null, 2);
+            } catch (e) {
+                alert("Invalid JSON");
+            }
+        }
+    </script>
+</body>
+
+</html>
+}

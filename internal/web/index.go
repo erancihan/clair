@@ -21,3 +21,8 @@ func Login() templ.Component {
 func NotFound() templ.Component {
 	return pages.NotFound()
 }
+
+// ---- pages
+func Requester() templ.Component {
+	return pages.RequesterPage()
+}
