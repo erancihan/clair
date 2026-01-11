@@ -51,6 +51,17 @@ func (s *backend) Routes() http.Handler {
 		templ.Handler(web.Base("Clair", web.Home())).ServeHTTP(w, r)
 	})
 
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+
+		// return json response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"version": "1.0.0", // todo: get version from build variable
+		})
+	})
+
 	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
 		// Serve static files from the embedded filesystem
 		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
