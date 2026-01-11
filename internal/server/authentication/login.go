@@ -63,6 +63,14 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 		}
 
 		session.Save(r, w)
+
+		// if the request is from API, return 200 OK
+		if r.Header.Get("Content-Type") == "application/json" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// else, redirect to dashboard
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 	}
 }
