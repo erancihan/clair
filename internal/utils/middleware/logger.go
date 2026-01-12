@@ -1,4 +1,4 @@
-package utils
+package middleware
 
 import (
 	"bytes"
@@ -130,24 +130,27 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
-func RegisterLoggerMiddleware(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+func Logger() func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
 
-		// initialize a response writer to capture the status code with default status 200
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			// initialize a response writer to capture the status code with default status 200
+			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-		// run the next handler
-		handler.ServeHTTP(rw, r)
+			// run the next handler
+			next.ServeHTTP(rw, r)
 
-		fmt.Printf(
-			"%v  %s%s %s %-75s %#v\n",
-			start.Format("2006-01-02T15:04:05.000Z0700"),
-			colorizeMethod(r.Method),
-			colorizeStatus(rw.statusCode),
-			colorizeDuration(time.Since(start)),
-			r.Header.Get("Accept"),
-			r.URL.Path,
-		)
-	})
+			fmt.Printf(
+				// "%v  %s%s %s %-75s %#v\n", 	// log format --- with headers
+				"%v  %s%s %s %#v\n",
+				start.Format("2006-01-02T15:04:05.000Z0700"),
+				colorizeMethod(r.Method),
+				colorizeStatus(rw.statusCode),
+				colorizeDuration(time.Since(start)),
+				// r.Header.Get("Accept"),
+				r.URL.Path,
+			)
+		})
+	}
 }

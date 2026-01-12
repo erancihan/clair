@@ -10,7 +10,7 @@ import (
 	"github.com/erancihan/clair/internal/database/models"
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
-	"github.com/erancihan/clair/internal/utils"
+	"github.com/erancihan/clair/internal/utils/middleware"
 	"github.com/erancihan/clair/internal/utils/router"
 	"github.com/erancihan/clair/internal/web"
 	"github.com/valkey-io/valkey-go"
@@ -41,6 +41,7 @@ func (s *backend) Server(port int) *http.Server {
 
 func (s *backend) Routes() http.Handler {
 	mux := router.NewRouter()
+	mux.Use(middleware.Logger())
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -126,7 +127,5 @@ func (s *backend) Routes() http.Handler {
 		templ.Handler(web.Requester()).ServeHTTP(w, r)
 	})
 
-	handler := utils.RegisterLoggerMiddleware(mux)
-
-	return handler
+	return mux
 }
