@@ -1,13 +1,15 @@
 package authentication
 
 import (
+	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/a-h/templ"
 	"github.com/erancihan/clair/internal/database/models"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/web"
+	"github.com/gorilla/sessions"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -17,54 +19,58 @@ func LoginPage(ctx server_context.BackEndContext) http.HandlerFunc {
 	}
 }
 
+type LoginPayload struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// handle login form submission
-		// get email and password from form
-		email := strings.ToLower(r.FormValue("email"))
-		password := r.FormValue("password")
-
-		// validate email and password
-		if email == "" || password == "" {
-			http.Error(w, "Email and password are required", http.StatusBadRequest)
+		var creds LoginPayload
+		if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+			http.Error(w, "Invalid request payload", http.StatusBadRequest)
 			return
 		}
 
-		// authenticate user
-
-		var user models.User
+		// lookup user in database
 
 		tx := ctx.DBConn.Session(&gorm.Session{Context: r.Context()})
 
-		result := tx.Limit(1).Where("email = ?", email).Find(&user)
+		var user models.User
+		result := tx.Limit(1).Where("email = ?", creds.Email).Find(&user)
 		if result.RowsAffected == 0 {
 			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 			return
 		}
 
 		// check password
-		// TODO:
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(creds.Password)); err != nil {
+			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+			return
+		}
 
-		// if fails, return error
-		// TODO:
+		// ---- create session ----
+		session, _ := store.Get(r, SESSION_NAME)
+		session.Values["authenticated"] = true
+		session.Values["id"] = user.ID
 
-		// otherwise, redirect with session cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:  "session_token",
-			Value: "some_session_token", // TODO: generate real session token
-		})
+		session.Options = &sessions.Options{
+			Path:     "/",
+			MaxAge:   3600,
+			HttpOnly: true,
+			Secure:   false,
+			SameSite: http.SameSiteLaxMode,
+		}
+
+		session.Save(r, w)
+
+		// if the request is from API, return 200 OK
+		if r.Header.Get("Content-Type") == "application/json" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// else, redirect to dashboard
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
-	}
-}
-
-func AuthLogout(ctx server_context.BackEndContext) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// handle logout
-	}
-}
-
-func AuthRegister(ctx server_context.BackEndContext) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// handle registration
 	}
 }

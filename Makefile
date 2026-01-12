@@ -59,3 +59,7 @@ tidy:
 	go mod tidy
 	go mod vendor
 	
+# testing
+.PHONY: test
+test:
+	go test ./test/... -v

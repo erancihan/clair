@@ -97,8 +97,9 @@ func (l Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, i
 		sql, rows := fc()
 		logger.Warn("trace", zap.Duration("elapsed", elapsed), zap.Int64("rows", rows), zap.String("sql", sql))
 	case l.LogLevel >= gormlogger.Info:
-		sql, rows := fc()
-		logger.Debug("trace", zap.Duration("elapsed", elapsed), zap.Int64("rows", rows), zap.String("sql", sql))
+		// sql, rows := fc()
+		_, rows := fc()
+		logger.Debug("trace", zap.Duration("elapsed", elapsed), zap.Int64("rows", rows) /*, zap.String("sql", sql)*/)
 	}
 }
 

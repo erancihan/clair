@@ -17,6 +17,9 @@ func newSQLiteConn(ctx context.Context) (*gorm.DB, error) {
 	if os.Getenv("DB_FOLDER") != "" {
 		dbPath = os.Getenv("DB_FOLDER") + "/clair.db"
 	}
+	if os.Getenv("DB_PATH") != "" {
+		dbPath = os.Getenv("DB_PATH")
+	}
 
 	zapLogger := utils.NewLogger("database")
 	defer func() { _ = zapLogger.Sync() }()
