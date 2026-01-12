@@ -46,11 +46,11 @@ func (s *backend) Routes() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			// return 404 page with 404 HTTP response
-			templ.Handler(web.Base("Clair", web.NotFound())).ServeHTTP(w, r)
+			templ.Handler(web.Base("Cihan Eran", web.NotFound())).ServeHTTP(w, r)
 			return
 		}
 
-		templ.Handler(web.Base("Clair", web.Home())).ServeHTTP(w, r)
+		templ.Handler(web.Base("Cihan Eran", web.Home())).ServeHTTP(w, r)
 	})
 
 	mux.Group("api", func(api *router.Router) {
