@@ -10,6 +10,7 @@ import (
 	"github.com/erancihan/clair/internal/database/models"
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
+	"github.com/erancihan/clair/internal/server/games"
 	"github.com/erancihan/clair/internal/utils/middleware"
 	"github.com/erancihan/clair/internal/utils/router"
 	"github.com/erancihan/clair/internal/web"
@@ -122,6 +123,30 @@ func (s *backend) Routes() http.Handler {
 	})
 
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
+
+	mux.Group("games", func(gamesRoute *router.Router) {
+		gamesRoute.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+			templ.Handler(web.Base("Games", web.Games())).ServeHTTP(w, r)
+		})
+
+		gamesRoute.Group("tic-tac-toe", func(route *router.Router) {
+			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+				templ.Handler(web.Base("Tic-Tac-Toe", web.TicTacToe())).ServeHTTP(w, r)
+			})
+			route.HandleFunc("POST /create", games.TicTacToe.CreateGame(s.context))
+			route.HandleFunc("GET /stream", games.TicTacToe.StreamGame(s.context))
+			route.HandleFunc("POST /move", games.TicTacToe.TakeAction(s.context))
+		})
+
+		gamesRoute.Group("chess", func(route *router.Router) {
+			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+				templ.Handler(web.Base("Chess", web.Chess())).ServeHTTP(w, r)
+			})
+			route.HandleFunc("POST /create", games.Chess.CreateGame(s.context))
+			route.HandleFunc("GET /stream", games.Chess.StreamGame(s.context))
+			route.HandleFunc("POST /move", games.Chess.TakeAction(s.context))
+		})
+	})
 
 	mux.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
 		templ.Handler(web.Requester()).ServeHTTP(w, r)
