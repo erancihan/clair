@@ -1,0 +1,238 @@
+package pages
+
+templ TicTacToe() {
+<div class="mt-16 sm:mt-16 sm:px-8">
+    <div class="mx-auto max-w-7xl lg:px-8">
+        <div class="relative px-4 sm:px-8 lg:px-12">
+            <div class="mx-auto max-w-2xl lg:max-w-5xl">
+                <div class="mb-8">
+                    <h1 class="text-4xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100 sm:text-5xl">
+                        Tic-Tac-Toe
+                    </h1>
+                    <p class="mt-4 text-base text-zinc-600 dark:text-zinc-400">
+                        Play against a random agent or challenge a friend via link.
+                    </p>
+                </div>
+                
+                <div class="w-full" x-data="tictactoe()">
+                    <!-- Menu -->
+                    <div x-show="!gameId" class="flex flex-col gap-4 max-w-sm mx-auto">
+                        <button @click="createGame('agent')" class="px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors shadow-sm font-semibold tracking-wide">
+                            Play vs Agent (Random)
+                        </button>
+                        <button @click="createGame('pvp')" class="px-4 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-xl transition-colors shadow-sm font-semibold tracking-wide">
+                            Create PvP Game
+                        </button>
+                        <div class="relative flex items-center pt-2">
+                            <div class="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
+                            <span class="flex-shrink-0 mx-4 text-zinc-400 text-sm">OR</span>
+                            <div class="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
+                        </div>
+                        <div class="flex gap-2">
+                            <input type="text" x-model="joinId" placeholder="Enter Game ID to Join" class="flex-1 px-4 py-3 border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-zinc-100 placeholder-zinc-400 font-mono text-sm">
+                            <button @click="joinGame" class="px-6 py-3 bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white rounded-xl hover:bg-zinc-700 dark:hover:bg-zinc-200 transition-colors font-semibold">
+                                Join
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Game Area -->
+                    <div x-show="gameId" x-cloak class="flex flex-col items-center max-w-md mx-auto mt-8 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-8 shadow-sm">
+                        
+                        <div class="w-full flex justify-between items-start mb-6 border-b border-zinc-100 dark:border-zinc-800 pb-4">
+                            <div class="flex flex-col">
+                                <span class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Session ID</span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-mono bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-300 px-2 py-1 rounded" x-text="gameId"></span>
+                                    <button @click="copyLink" class="text-zinc-400 hover:text-blue-500 transition-colors" title="Copy Invite Link">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                    </button>
+                                </div>
+                                <span x-show="copied" x-transition.opacity class="text-xs text-green-500 mt-1">Copied!</span>
+                            </div>
+                            <div class="flex flex-col items-end">
+                                <span class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Playing As</span>
+                                <span class="text-xl font-black" :class="player === 'X' ? 'text-blue-500' : 'text-rose-500'" x-text="player"></span>
+                            </div>
+                        </div>
+
+                        <!-- Waiting State for PvP -->
+                        <div x-show="gameType === 0 && status === 'Waiting'" class="w-full mb-8 p-5 bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 rounded-2xl text-center border border-purple-100 dark:border-purple-500/20">
+                            <div class="flex items-center justify-center mb-3">
+                                <svg class="animate-spin h-5 w-5 text-purple-600 dark:text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                            </div>
+                            <p class="text-sm font-semibold mb-1">Waiting for opponent...</p>
+                            <p class="text-xs opacity-80">Copy the session ID or URL and send it to a friend to start playing.</p>
+                        </div>
+
+                        <!-- Turn / Status Indicator -->
+                        <div x-show="status !== 'Waiting'" class="mb-8 w-full text-center">
+                            <template x-if="status === 'Ongoing'">
+                                <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-100 dark:bg-zinc-800 text-sm font-medium">
+                                    <span class="text-zinc-500">Turn:</span>
+                                    <span class="font-bold" :class="turn === 'X' ? 'text-blue-500' : 'text-rose-500'" x-text="turn"></span>
+                                    <span x-show="turn === player" class="ml-1 text-xs bg-zinc-200 dark:bg-zinc-700 px-2 py-0.5 rounded text-zinc-700 dark:text-zinc-300">(You)</span>
+                                </div>
+                            </template>
+                            <template x-if="status !== 'Ongoing'">
+                                <div class="text-2xl font-black text-zinc-900 dark:text-white" x-text="status"></div>
+                            </template>
+                        </div>
+
+                        <!-- Board Grid -->
+                        <div class="grid grid-cols-3 gap-2 sm:gap-3 w-full max-w-[320px] mb-8">
+                            <template x-for="(cell, index) in board" :key="index">
+                                <button
+                                    @click="makeMove(index)"
+                                    class="w-full aspect-square text-5xl sm:text-6xl font-black rounded-2xl flex items-center justify-center transition-all duration-200 ease-out"
+                                    :class="{
+                                        'bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 cursor-pointer shadow-inner': cell === '' && status === 'Ongoing' && turn === player,
+                                        'bg-zinc-50 dark:bg-zinc-800/40 cursor-default': cell === '' && (status !== 'Ongoing' || turn !== player),
+                                        'bg-blue-50 dark:bg-blue-900/20 text-blue-500 shadow-sm border border-blue-100 dark:border-blue-900/30': cell === 'X',
+                                        'bg-rose-50 dark:bg-rose-900/20 text-rose-500 shadow-sm border border-rose-100 dark:border-rose-900/30': cell === 'O'
+                                    }"
+                                >
+                                    <span x-text="cell"></span>
+                                </button>
+                            </template>
+                        </div>
+
+                        <button @click="resetSession" class="text-sm font-medium text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
+                            Leave Game
+                        </button>
+                    </div>
+                </div>
+
+                <style>
+                    [x-cloak] { display: none !important; }
+                </style>
+
+                <script>
+                    document.addEventListener('alpine:init', () => {
+                        Alpine.data('tictactoe', () => ({
+                            gameId: '',
+                            joinId: '',
+                            player: '',
+                            turn: 'X',
+                            board: ['', '', '', '', '', '', '', '', ''],
+                            status: '',
+                            gameType: -1,
+                            eventSource: null,
+                            copied: false,
+
+                            init() {
+                                const params = new URLSearchParams(window.location.search);
+                                const id = params.get('id');
+                                if (id) {
+                                    this.joinId = id;
+                                    this.joinGame();
+                                }
+                            },
+
+                            async createGame(gameMode) {
+                                try {
+                                    const res = await fetch('/games/tic-tac-toe/create', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ game_mode: gameMode })
+                                    });
+                                    const data = await res.json();
+                                    this.gameId = data.game_id;
+                                    this.player = data.player; // should be 'X'
+                                    
+                                    const url = new URL(window.location);
+                                    url.searchParams.set('id', this.gameId);
+                                    window.history.pushState({}, '', url);
+
+                                    this.connectSSE();
+                                } catch (e) {
+                                    console.error(e);
+                                    alert("Failed to create game");
+                                }
+                            },
+
+                            async joinGame() {
+                                if (!this.joinId) return;
+                                this.gameId = this.joinId;
+                                this.player = 'O'; // Joining player is O by default, logic could be handled serverside but this is fine for simple pvp
+                                
+                                const url = new URL(window.location);
+                                url.searchParams.set('id', this.gameId);
+                                window.history.pushState({}, '', url);
+
+                                this.connectSSE();
+                            },
+
+                            connectSSE() {
+                                if (this.eventSource) {
+                                    this.eventSource.close();
+                                }
+                                this.eventSource = new EventSource(`/games/tic-tac-toe/stream?id=${this.gameId}`);
+                                this.eventSource.onmessage = (e) => {
+                                    const event = JSON.parse(e.data);
+                                    if (event.type === 'update') {
+                                        this.board = event.data.board;
+                                        this.status = event.data.status;
+                                        this.gameType = event.data.game_type;
+                                        this.turn = event.data.turn;
+                                    } else if (event.type === 'error') {
+                                        alert(event.error);
+                                        this.resetSession();
+                                    }
+                                };
+                                this.eventSource.onerror = (e) => {
+                                    console.error("SSE error", e);
+                                    this.status = "Connection Error";
+                                    this.eventSource.close();
+                                };
+                            },
+
+                            async makeMove(index) {
+                                if (this.board[index] !== '' || this.status !== 'Ongoing' || this.turn !== this.player) return;
+                                try {
+                                    await fetch('/games/tic-tac-toe/move', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            game_id: this.gameId,
+                                            player: this.player,
+                                            index: index
+                                        })
+                                    });
+                                } catch (e) {
+                                    console.error(e);
+                                }
+                            },
+
+                            copyLink() {
+                                navigator.clipboard.writeText(window.location.href);
+                                this.copied = true;
+                                setTimeout(() => this.copied = false, 2000);
+                            },
+
+                            resetSession() {
+                                if (this.eventSource) {
+                                    this.eventSource.close();
+                                    this.eventSource = null;
+                                }
+                                this.gameId = '';
+                                this.joinId = '';
+                                this.player = '';
+                                this.board = ['', '', '', '', '', '', '', '', ''];
+                                this.status = '';
+                                
+                                const url = new URL(window.location);
+                                url.searchParams.delete('id');
+                                window.history.pushState({}, '', url);
+                            }
+                        }));
+                    });
+                </script>
+            </div>
+        </div>
+    </div>
+</div>
+}

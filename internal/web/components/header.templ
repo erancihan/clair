@@ -17,28 +17,32 @@ templ desktopNavigation() {
 <nav class="pointer-events-auto hidden md:block">
     <ul
         class="flex rounded-full bg-white/90 px-3 text-sm font-medium text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur dark:bg-zinc-800/90 dark:text-zinc-200 dark:ring-white/10">
-        // @NavItem("/", true, "Home")
-        // @NavItem("/blog", false, "Blog")
-        // @NavItem("/projects", false, "Projects")
+        @NavItem("/", false, "Home")
+        @NavItem("/games", false, "Games")
     </ul>
 </nav>
 }
 
 templ mobileNavigation() {
-<div class="pointer-events-auto md:hidden">
-</div>
+<nav class="pointer-events-auto block md:hidden">
+    <ul
+        class="flex rounded-full bg-white/90 px-3 text-sm font-medium text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur dark:bg-zinc-800/90 dark:text-zinc-200 dark:ring-white/10">
+        @NavItem("/", false, "Home")
+        @NavItem("/games", false, "Games")
+    </ul>
+</nav>
 }
 
 templ Header() {
 <header class="pointer-events-none relative z-50 flex flex-col">
     <div class="top-0 z-10 h-16 pt-6">
         <div
-            class="sm:px-8 top-[var(--header-top,theme(spacing.6))] w-full mx-auto max-w-9xl relative px-4 lg:px-20 lg:max-w-12xl">
+            class="sm:px-8 w-full mx-auto max-w-9xl relative px-4 lg:px-20 lg:max-w-12xl">
             <div class="relative flex gap-4">
                 <div class="flex flex-1">
                     <div class="flex flex-1 justify-end md:justify-center">
-                        // @desktopNavigation()
-                        // @mobileNavigation()
+                        @desktopNavigation()
+                        @mobileNavigation()
                     </div>
                 </div>
             </div>

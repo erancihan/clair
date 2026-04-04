@@ -26,3 +26,15 @@ func NotFound() templ.Component {
 func Requester() templ.Component {
 	return pages.RequesterPage()
 }
+
+func Games() templ.Component {
+	return pages.Games()
+}
+
+func TicTacToe() templ.Component {
+	return pages.TicTacToe()
+}
+
+func Chess() templ.Component {
+	return pages.Chess()
+}
