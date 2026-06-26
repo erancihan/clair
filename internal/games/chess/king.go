@@ -5,7 +5,8 @@ type King struct {
 }
 
 // Fulfilling the interface
-func (k *King) Color() Color { return k.color }
+func (k *King) Color() Color    { return k.color }
+func (k *King) Type() PieceType { return KingType }
 func (k *King) ToString() string {
 	if k.color == White {
 		return "♔"

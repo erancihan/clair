@@ -6,7 +6,8 @@ type Knight struct {
 }
 
 // Fulfilling the interface
-func (k *Knight) Color() Color { return k.color }
+func (k *Knight) Color() Color    { return k.color }
+func (k *Knight) Type() PieceType { return KnightType }
 func (k *Knight) ToString() string {
 	if k.color == White {
 		return "♘"

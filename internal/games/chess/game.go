@@ -1,6 +1,7 @@
 package games_chess
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/erancihan/clair/internal/utils"
@@ -12,8 +13,6 @@ const (
 	TypePvP GameType = iota
 	TypeAgent
 )
-
-type Player string
 
 type Status string
 
@@ -32,7 +31,7 @@ type Move struct {
 
 type GameState struct {
 	Board    Board    `json:"board"`
-	Turn     Player   `json:"turn"`
+	Turn     Color    `json:"turn"`
 	Status   Status   `json:"status"`
 	GameType GameType `json:"game_type"`
 }
@@ -68,7 +67,7 @@ func NewGame(gType GameType) (*Game, string) {
 		ID: gameID,
 		State: GameState{
 			Board:    NewBoard(),
-			Turn:     "white",
+			Turn:     White,
 			Status:   StatusWaiting, // Waiting for player 2 in PvP
 			GameType: gType,         // Set to the provided game type
 		},
@@ -129,7 +128,12 @@ func (g *Game) MakeMove(player string, from, to string) error {
 	if g.State.Status != StatusOngoing {
 		return nil // Game not active, ignore moves
 	}
-	if player != string(g.State.Turn) {
+
+	playerColor, ok := ColorFromString(player)
+	if !ok {
+		return fmt.Errorf("invalid player %q", player)
+	}
+	if playerColor != g.State.Turn {
 		return nil // Not this player's turn, ignore move
 	}
 
@@ -143,20 +147,43 @@ func (g *Game) MakeMove(player string, from, to string) error {
 		return err
 	}
 
-	err = g.State.Board.MovePiece(fromPos, toPos)
-	if err != nil {
+	// Ensure the player is moving one of their own pieces. The frontend already
+	// enforces this, but the server is authoritative.
+	piece := g.State.Board.Grid[fromPos.Row][fromPos.Col]
+	if piece == nil || piece.Color() != playerColor {
+		return fmt.Errorf("no %s piece at %s", playerColor, from)
+	}
+
+	if err := g.State.Board.MovePiece(fromPos, toPos); err != nil {
 		return err
 	}
 
-	// Switch turn
-	if g.State.Turn == "white" {
-		g.State.Turn = "black"
-	} else {
-		g.State.Turn = "white"
-	}
+	// Hand the turn to the opponent, then evaluate the resulting position.
+	g.State.Turn = g.State.Turn.Opponent()
+	g.updateStatusLocked()
 
 	g.broadcastLocked()
 	return nil
+}
+
+// updateStatusLocked transitions the game to a terminal status when the side to
+// move has no legal reply: checkmate (the player who just moved wins) or
+// stalemate (draw). Caller must hold g.mu.
+func (g *Game) updateStatusLocked() {
+	side := g.State.Turn
+	if g.State.Board.HasAnyLegalMove(side) {
+		return // game continues
+	}
+
+	if g.State.Board.InCheck(side) {
+		if side == White {
+			g.State.Status = StatusBlackWins
+		} else {
+			g.State.Status = StatusWhiteWins
+		}
+	} else {
+		g.State.Status = StatusDraw // stalemate
+	}
 }
 
 func (g *Game) broadcastLocked() {
@@ -177,8 +204,15 @@ func (g *Game) broadcastLocked() {
 }
 
 func (g *Game) parsePosition(pos string) (Position, error) {
-	return Position{
-		Row: int(pos[1] - '1'), // '1' -> 0, '2' -> 1, ..., '8' -> 7
-		Col: int(pos[0] - 'a'), // 'a' -> 0, 'b' -> 1, ..., 'h' -> 7
-	}, nil
+	if len(pos) != 2 {
+		return Position{}, fmt.Errorf("invalid position %q", pos)
+	}
+
+	col := int(pos[0] - 'a') // 'a' -> 0, 'b' -> 1, ..., 'h' -> 7
+	row := int(pos[1] - '1') // '1' -> 0, '2' -> 1, ..., '8' -> 7
+	if col < 0 || col > 7 || row < 0 || row > 7 {
+		return Position{}, fmt.Errorf("position out of range %q", pos)
+	}
+
+	return Position{Row: row, Col: col}, nil
 }

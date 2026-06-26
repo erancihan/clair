@@ -5,7 +5,8 @@ type Queen struct {
 }
 
 // Fulfilling the interface
-func (q *Queen) Color() Color { return q.color }
+func (q *Queen) Color() Color    { return q.color }
+func (q *Queen) Type() PieceType { return QueenType }
 func (q *Queen) ToString() string {
 	if q.color == White {
 		return "♕"
