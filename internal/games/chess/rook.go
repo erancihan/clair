@@ -5,7 +5,8 @@ type Rook struct {
 }
 
 // Fulfilling the interface
-func (r *Rook) Color() Color { return r.color }
+func (r *Rook) Color() Color    { return r.color }
+func (r *Rook) Type() PieceType { return RookType }
 func (r *Rook) ToString() string {
 	if r.color == White {
 		return "♖"

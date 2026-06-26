@@ -5,7 +5,8 @@ type Pawn struct {
 }
 
 // Fulfilling the interface
-func (p *Pawn) Color() Color { return p.color }
+func (p *Pawn) Color() Color    { return p.color }
+func (p *Pawn) Type() PieceType { return PawnType }
 func (p *Pawn) ToString() string {
 	if p.color == White {
 		return "♙"
@@ -24,27 +25,37 @@ func (p *Pawn) ValidMoves(board *Board, pos Position) []Position {
 		startRow = 6
 	}
 
-	// Move forward one square
-	if board.IsValidDestination(pos.Row+direction, pos.Col, p.color) {
-		moves = append(moves, Position{pos.Row + direction, pos.Col})
+	// Move forward one square: only onto an empty square (pawns never capture
+	// straight ahead).
+	oneRow := pos.Row + direction
+	if board.InBounds(oneRow, pos.Col) && board.Grid[oneRow][pos.Col] == nil {
+		moves = append(moves, Position{oneRow, pos.Col})
 
-		// Move forward two squares from starting position
-		if pos.Row == startRow && board.IsValidDestination(pos.Row+2*direction, pos.Col, p.color) {
-			moves = append(moves, Position{pos.Row + 2*direction, pos.Col})
+		// Move forward two squares from the starting rank: both the square
+		// being passed over and the destination must be empty.
+		twoRow := pos.Row + 2*direction
+		if pos.Row == startRow && board.InBounds(twoRow, pos.Col) && board.Grid[twoRow][pos.Col] == nil {
+			moves = append(moves, Position{twoRow, pos.Col})
 		}
 	}
 
-	// Capture diagonally
+	// Capture diagonally: only when an enemy piece occupies the target square.
 	for _, colOffset := range []int{-1, 1} {
 		newCol := pos.Col + colOffset
-		if board.IsValidDestination(pos.Row+direction, newCol, p.color) && board.Grid[pos.Row+direction][newCol] != nil {
-			moves = append(moves, Position{pos.Row + direction, newCol})
+		if !board.InBounds(oneRow, newCol) {
+			continue
+		}
+		target := board.Grid[oneRow][newCol]
+		if target != nil && target.Color() != p.color {
+			moves = append(moves, Position{oneRow, newCol})
+		}
+		// En passant target is tracked on the board (Board.EnPassant). Move
+		// generation and the accompanying capture are implemented in a later
+		// phase; the field is consulted here only when set.
+		if board.EnPassant != nil && board.EnPassant.Row == oneRow && board.EnPassant.Col == newCol {
+			moves = append(moves, Position{oneRow, newCol})
 		}
 	}
-
-	// TODO: handle promotion
-	// TODO: promotion
-	// en-passant and promotion logic can be added here in the future
 
 	return moves
 }

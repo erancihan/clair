@@ -5,7 +5,8 @@ type Bishop struct {
 }
 
 // Fulfilling the interface
-func (b *Bishop) Color() Color { return b.color }
+func (b *Bishop) Color() Color    { return b.color }
+func (b *Bishop) Type() PieceType { return BishopType }
 func (b *Bishop) ToString() string {
 	if b.color == White {
 		return "♗"

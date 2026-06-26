@@ -1,16 +1,54 @@
 # Chess
+
+A from-scratch chess engine and PvP server. The engine (this package) is pure,
+deterministic Go with no external dependencies; the HTTP/SSE layer lives in
+`internal/server/games` and the UI in `internal/web/pages/games_chess.templ`.
+
+## Architecture
+
+- `piece.go` — the `Piece` interface (`Color`, `Type`, `ValidMoves`), plus the
+  `Color`/`PieceType` enums and their wire encodings.
+- one file per piece — each generates *pseudo-legal* moves for its kind.
+- `chessboard.go` — the `Board`: grid, FEN-style state, attack detection
+  (`IsAttacked`), and the legal-move layer (`LegalMoves` filters pseudo-legal
+  moves that would leave the mover's own king in check).
+- `game.go` — session, turn handling, SSE client fan-out, and terminal-state
+  detection (checkmate/stalemate).
+- `chess_test.go` — `perft` move-generation counts plus targeted rule tests.
+
+Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
+
+## Status
+
+### Done (Phase 0 — legal, winnable PvP)
+- [x] Correct pawn moves (no forward capture, double-step requires a clear path)
+- [x] Legal-move generation filtered by king safety (no moving into / leaving check)
+- [x] Check, checkmate and stalemate detection → games now end
+- [x] Server-authoritative turn + piece-ownership enforcement
+- [x] FEN-style board state scaffolding (en-passant target, castling rights,
+      halfmove/fullmove counters) — maintained by the rules added in Phase 1
+- [x] `perft(1..4)` correctness tests + per-rule unit tests
+
 ## TODO
-- [ ] Implement enpassant
-- [ ] Implement castling
+
+### Phase 1 — complete the ruleset
 - [ ] Implement promotion
-- [ ] Implement check and checkmate detection
-- [ ] Implement stalemate detection
+- [ ] Implement castling
+- [ ] Implement en passant
+- [ ] Implement draw by the fifty-move rule
 - [ ] Implement draw by repetition detection
 - [ ] Implement draw by insufficient material detection
-- [ ] Implement game state persistence (e.g., in-memory or database)
+- [ ] Resign / draw offer & agreement
+
+### Phase 2 — session & platform robustness
+- [ ] Bind the white/black seat to a session/user (reconnect + spectators)
 - [ ] Implement timeout and cleanup for inactive games
-- [ ] Implement game lobby and matchmaking
-- [ ] Add user authentication
-- [ ] Add player matchmaking
+- [ ] Implement game state persistence (database) + move history / PGN
 - [ ] Add turn timers
 - [ ] Auto-forfeit for inactive players
+
+### Phase 3 — features & polish
+- [ ] AI opponent (enable `TypeAgent`)
+- [ ] Implement game lobby and matchmaking
+- [ ] Move history, last-move/check highlighting, captured-piece tray
+- [ ] FEN / PGN import & export

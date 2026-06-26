@@ -152,8 +152,17 @@ templ Chess() {
                                 const params = new URLSearchParams(window.location.search);
                                 const id = params.get('id');
                                 if (id) {
-                                    this.joinId = id;
-                                    this.joinGame();
+                                    // Reconnect with the seat we already hold for this game (so
+                                    // refreshing keeps your color); otherwise it's a fresh join as black.
+                                    const savedSeat = localStorage.getItem('chess:seat:' + id);
+                                    if (savedSeat) {
+                                        this.gameId = id;
+                                        this.player = savedSeat;
+                                        this.connectSSE();
+                                    } else {
+                                        this.joinId = id;
+                                        this.joinGame();
+                                    }
                                 }
                             },
 
@@ -167,7 +176,8 @@ templ Chess() {
                                     const data = await res.json();
                                     this.gameId = data.game_id;
                                     this.player = data.player; // 'white'
-                                    
+                                    localStorage.setItem('chess:seat:' + this.gameId, this.player);
+
                                     const url = new URL(window.location);
                                     url.searchParams.set('id', this.gameId);
                                     window.history.pushState({}, '', url);
@@ -183,7 +193,8 @@ templ Chess() {
                                 if (!this.joinId) return;
                                 this.gameId = this.joinId;
                                 this.player = 'black'; // Implicit joining is black
-                                
+                                localStorage.setItem('chess:seat:' + this.gameId, this.player);
+
                                 const url = new URL(window.location);
                                 url.searchParams.set('id', this.gameId);
                                 window.history.pushState({}, '', url);
@@ -322,6 +333,9 @@ templ Chess() {
                                 if (this.eventSource) {
                                     this.eventSource.close();
                                     this.eventSource = null;
+                                }
+                                if (this.gameId) {
+                                    localStorage.removeItem('chess:seat:' + this.gameId);
                                 }
                                 this.gameId = '';
                                 this.joinId = '';
