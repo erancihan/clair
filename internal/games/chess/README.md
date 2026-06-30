@@ -39,7 +39,7 @@ Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
 - [x] Implement draw by repetition detection
 - [x] Implement draw by insufficient material detection
 - [x] FEN import (`NewBoardFromFEN`)
-- [ ] Resign / draw offer & agreement
+- [x] Resign / draw offer & agreement
 
 ### Phase 2 — session & platform robustness
 - [ ] Bind the white/black seat to a session/user (reconnect + spectators)

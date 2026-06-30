@@ -89,6 +89,7 @@ func (s *chessService) StreamGame(ctx server_context.BackEndContext) http.Handle
 type actionRequest struct {
 	GameID    string `json:"game_id"`
 	Player    string `json:"player"`              // "white" or "black"
+	Action    string `json:"action,omitempty"`    // "move" (default), "resign", "offer_draw", "accept_draw", "decline_draw"
 	From      string `json:"from"`                // e.g. "e2"
 	To        string `json:"to"`                  // e.g. "e4"
 	Promotion string `json:"promotion,omitempty"` // "queen"/"rook"/"bishop"/"knight" for a promoting pawn
@@ -108,7 +109,19 @@ func (s *chessService) TakeAction(ctx server_context.BackEndContext) http.Handle
 			return
 		}
 
-		err := instance.MakeMove(req.Player, req.From, req.To, req.Promotion)
+		var err error
+		switch req.Action {
+		case "resign":
+			err = instance.Resign(req.Player)
+		case "offer_draw":
+			err = instance.OfferDraw(req.Player)
+		case "accept_draw":
+			err = instance.AcceptDraw(req.Player)
+		case "decline_draw":
+			err = instance.DeclineDraw(req.Player)
+		default: // "move" or empty
+			err = instance.MakeMove(req.Player, req.From, req.To, req.Promotion)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

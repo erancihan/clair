@@ -115,6 +115,22 @@ templ Chess() {
                             </div>
                         </div>
 
+                        <!-- In-game controls: resign / draw offer -->
+                        <div x-show="status === 'Ongoing'" class="w-full flex flex-col items-center gap-3 mb-4">
+                            <div x-show="drawOfferedBy && drawOfferedBy !== player" x-cloak class="w-full max-w-sm p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 text-center">
+                                <p class="text-sm font-medium text-amber-800 dark:text-amber-300 mb-2">Your opponent offers a draw.</p>
+                                <div class="flex justify-center gap-2">
+                                    <button @click="sendAction('accept_draw')" class="px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition-colors">Accept</button>
+                                    <button @click="sendAction('decline_draw')" class="px-3 py-1.5 text-sm rounded-lg bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-100 font-semibold transition-colors">Decline</button>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button @click="if (confirm('Resign this game?')) sendAction('resign')" class="px-4 py-2 text-sm rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold transition-colors">Resign</button>
+                                <button x-show="!drawOfferedBy" @click="sendAction('offer_draw')" class="px-4 py-2 text-sm rounded-lg bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-100 font-semibold transition-colors">Offer Draw</button>
+                                <span x-show="drawOfferedBy === player" x-cloak class="px-3 py-2 text-sm text-zinc-500 italic">Draw offered…</span>
+                            </div>
+                        </div>
+
                         <button @click="resetSession" class="text-sm font-medium text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
                             Leave Game
                         </button>
@@ -155,6 +171,7 @@ templ Chess() {
                             
                             selectedSquare: null, // Holds string like 'e2'
                             promotionMove: null, // { from, to } awaiting a promotion choice
+                            drawOfferedBy: null, // 'white' | 'black' | null
 
                             init() {
                                 // Initialize empty board
@@ -230,6 +247,7 @@ templ Chess() {
                                         this.status = event.data.status;
                                         this.gameType = event.data.game_type;
                                         this.turn = event.data.turn;
+                                        this.drawOfferedBy = event.data.draw_offered_by;
                                         // Deselect on opponent move
                                         this.selectedSquare = null;
                                     } else if (event.type === 'error') {
@@ -364,6 +382,22 @@ templ Chess() {
                                 this.selectedSquare = null;
                             },
 
+                            async sendAction(action) {
+                                try {
+                                    await fetch('/games/chess/move', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            game_id: this.gameId,
+                                            player: this.player,
+                                            action: action
+                                        })
+                                    });
+                                } catch (e) {
+                                    console.error(e);
+                                }
+                            },
+
                             copyLink() {
                                 navigator.clipboard.writeText(window.location.href);
                                 this.copied = true;
@@ -391,6 +425,7 @@ templ Chess() {
                                 this.status = '';
                                 this.selectedSquare = null;
                                 this.promotionMove = null;
+                                this.drawOfferedBy = null;
 
                                 const url = new URL(window.location);
                                 url.searchParams.delete('id');

@@ -21,7 +21,7 @@ move generator against known reference values.
 - Frontend seat persistence (refresh no longer demotes the creator to black).
 - Tests: `perft(1..4) = 20 / 400 / 8902 / 197281` + per-rule unit tests.
 
-## Phase 1 — Complete the ruleset 🚧 nearly done
+## Phase 1 — Complete the ruleset ✅ done
 
 Goal: a fully rules-compliant game. The FEN scaffolding from Phase 0 exists to
 make these clean.
@@ -39,7 +39,9 @@ make these clean.
       (position history), insufficient material.
 - [x] **FEN import** (`NewBoardFromFEN`) — used by the perft tests; the basis for
       the Phase 3 FEN import/export feature.
-- [ ] **Resign / draw offer** — game actions + handler routes + UI. *(remaining)*
+- [x] **Resign / draw offer** — `Resign`/`OfferDraw`/`AcceptDraw`/`DeclineDraw`
+      game actions, dispatched via the action endpoint, with resign/draw UI
+      controls; a move supersedes any pending offer.
 
 Validation: standard perft positions pass to reference counts — start position
 to depth 5, Kiwipete (castling) to depth 4 = 4,085,603, Position 3 (en passant /
