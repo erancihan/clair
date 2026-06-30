@@ -399,3 +399,60 @@ func TestThreefoldRepetitionDraw(t *testing.T) {
 		t.Errorf("expected draw by threefold repetition, got %q", g.State.Status)
 	}
 }
+
+// --- Phase 1: resign & draw offers -----------------------------------------
+
+func TestResignAwardsOpponent(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.State.Status = StatusOngoing
+
+	if err := g.Resign("white"); err != nil {
+		t.Fatalf("resign: %v", err)
+	}
+	if g.State.Status != StatusBlackWins {
+		t.Errorf("white resigning should give Black Wins, got %q", g.State.Status)
+	}
+}
+
+func TestDrawOfferAndAccept(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.State.Status = StatusOngoing
+
+	if err := g.OfferDraw("white"); err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	if g.State.DrawOfferedBy == nil || *g.State.DrawOfferedBy != White {
+		t.Fatal("expected an outstanding draw offer from white")
+	}
+
+	// A player must not be able to accept their own offer.
+	if err := g.AcceptDraw("white"); err != nil {
+		t.Fatal(err)
+	}
+	if g.State.Status != StatusOngoing {
+		t.Error("a player must not accept their own draw offer")
+	}
+
+	// The opponent accepts.
+	if err := g.AcceptDraw("black"); err != nil {
+		t.Fatal(err)
+	}
+	if g.State.Status != StatusDraw {
+		t.Errorf("expected Draw after black accepts, got %q", g.State.Status)
+	}
+}
+
+func TestMoveClearsDrawOffer(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.State.Status = StatusOngoing
+
+	if err := g.OfferDraw("white"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.MakeMove("white", "e2", "e4", ""); err != nil {
+		t.Fatalf("e2-e4: %v", err)
+	}
+	if g.State.DrawOfferedBy != nil {
+		t.Error("making a move should clear the pending draw offer")
+	}
+}

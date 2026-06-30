@@ -35,6 +35,9 @@ type GameState struct {
 	Turn     Color    `json:"turn"`
 	Status   Status   `json:"status"`
 	GameType GameType `json:"game_type"`
+	// DrawOfferedBy is the color of the player with an outstanding draw offer,
+	// or nil when there is none.
+	DrawOfferedBy *Color `json:"draw_offered_by"`
 }
 
 type Event struct {
@@ -168,12 +171,92 @@ func (g *Game) MakeMove(player string, from, to, promotion string) error {
 		return err
 	}
 
+	// A move supersedes any pending draw offer.
+	g.State.DrawOfferedBy = nil
+
 	// Hand the turn to the opponent, record the new position for repetition
 	// tracking, then evaluate the resulting position.
 	g.State.Turn = g.State.Turn.Opponent()
 	g.history[g.positionKey()]++
 	g.updateStatusLocked()
 
+	g.broadcastLocked()
+	return nil
+}
+
+// Resign ends the game in favor of the resigning player's opponent.
+func (g *Game) Resign(player string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.State.Status != StatusOngoing {
+		return nil
+	}
+	color, ok := ColorFromString(player)
+	if !ok {
+		return fmt.Errorf("invalid player %q", player)
+	}
+
+	if color == White {
+		g.State.Status = StatusBlackWins
+	} else {
+		g.State.Status = StatusWhiteWins
+	}
+	g.State.DrawOfferedBy = nil
+	g.broadcastLocked()
+	return nil
+}
+
+// OfferDraw records an outstanding draw offer from the given player.
+func (g *Game) OfferDraw(player string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.State.Status != StatusOngoing {
+		return nil
+	}
+	color, ok := ColorFromString(player)
+	if !ok {
+		return fmt.Errorf("invalid player %q", player)
+	}
+
+	g.State.DrawOfferedBy = &color
+	g.broadcastLocked()
+	return nil
+}
+
+// AcceptDraw ends the game in a draw, but only when the accepting player is
+// responding to an offer made by their opponent.
+func (g *Game) AcceptDraw(player string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.State.Status != StatusOngoing {
+		return nil
+	}
+	color, ok := ColorFromString(player)
+	if !ok {
+		return fmt.Errorf("invalid player %q", player)
+	}
+	if g.State.DrawOfferedBy == nil || *g.State.DrawOfferedBy == color {
+		return nil // no opponent offer to accept
+	}
+
+	g.State.Status = StatusDraw
+	g.State.DrawOfferedBy = nil
+	g.broadcastLocked()
+	return nil
+}
+
+// DeclineDraw clears any outstanding draw offer.
+func (g *Game) DeclineDraw(player string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.State.DrawOfferedBy == nil {
+		return nil
+	}
+	g.State.DrawOfferedBy = nil
 	g.broadcastLocked()
 	return nil
 }
