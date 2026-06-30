@@ -21,26 +21,29 @@ move generator against known reference values.
 - Frontend seat persistence (refresh no longer demotes the creator to black).
 - Tests: `perft(1..4) = 20 / 400 / 8902 / 197281` + per-rule unit tests.
 
-## Phase 1 — Complete the ruleset 🚧 in progress
+## Phase 1 — Complete the ruleset 🚧 nearly done
 
 Goal: a fully rules-compliant game. The FEN scaffolding from Phase 0 exists to
 make these clean.
 
-- [ ] **Promotion** — `Move`/`actionRequest` carry a promotion choice; `applyMove`
-      swaps the pawn on the last rank; `GenerateLegalMoves` emits one entry per
-      choice; UI piece picker (default queen).
-- [ ] **En passant** — `applyMove` removes the passed pawn; `MakeMove` sets/clears
-      `Board.EnPassant` on double-push. (Generation already stubbed in `pawn.go`.)
-- [ ] **Castling** — king two-square moves gated on `CastlingRights`, empty path,
+- [x] **Promotion** — `MakeMove`/`actionRequest` carry a promotion choice;
+      `applyMove` swaps the pawn on the last rank; `GenerateLegalMoves` emits one
+      entry per choice; UI piece picker (defaults to queen).
+- [x] **En passant** — `applyMove` removes the passed pawn; the ep target is set
+      on a double-push and cleared otherwise.
+- [x] **Castling** — king two-square moves gated on `CastlingRights`, empty path,
       and `!IsAttacked` over the king's path (no castling out of / through / into
       check); `applyMove` relocates the rook; rights revoked on king/rook move or
       rook capture.
-- [ ] **Draw rules** — fifty-move (`HalfmoveClock`), threefold repetition
+- [x] **Draw rules** — fifty-move (`HalfmoveClock`), threefold repetition
       (position history), insufficient material.
-- [ ] **Resign / draw offer** — game actions + handler routes + UI.
+- [x] **FEN import** (`NewBoardFromFEN`) — used by the perft tests; the basis for
+      the Phase 3 FEN import/export feature.
+- [ ] **Resign / draw offer** — game actions + handler routes + UI. *(remaining)*
 
-Validation: standard perft positions (start position depth 5, Kiwipete,
-en-passant- and promotion-heavy positions) plus per-rule unit tests.
+Validation: standard perft positions pass to reference counts — start position
+to depth 5, Kiwipete (castling) to depth 4 = 4,085,603, Position 3 (en passant /
+pins), Position 5 (promotion) — plus per-rule unit tests.
 
 ## Phase 2 — Session & platform robustness
 

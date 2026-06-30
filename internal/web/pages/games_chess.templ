@@ -118,6 +118,20 @@ templ Chess() {
                         <button @click="resetSession" class="text-sm font-medium text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
                             Leave Game
                         </button>
+
+                        <!-- Promotion Picker -->
+                        <div x-show="promotionMove" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click="cancelPromotion()">
+                            <div class="bg-white dark:bg-zinc-900 rounded-2xl p-5 shadow-xl border border-zinc-200 dark:border-zinc-800" @click.stop>
+                                <p class="text-sm font-semibold text-center mb-3 text-zinc-700 dark:text-zinc-200">Promote to</p>
+                                <div class="flex gap-2">
+                                    <template x-for="pt in ['queen','rook','bishop','knight']" :key="pt">
+                                        <button @click="choosePromotion(pt)" class="w-16 h-16 flex items-center justify-center rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors">
+                                            <div class="w-12 h-12" x-html="getPieceSVG({ color: player, type: pt })"></div>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -140,6 +154,7 @@ templ Chess() {
                             copied: false,
                             
                             selectedSquare: null, // Holds string like 'e2'
+                            promotionMove: null, // { from, to } awaiting a promotion choice
 
                             init() {
                                 // Initialize empty board
@@ -287,6 +302,13 @@ templ Chess() {
 
                                 // If I clicked a valid move destination, perform the move
                                 if (this.selectedSquare && this.isValidMove(cell)) {
+                                    const moving = this.pieceAt(this.selectedSquare);
+                                    const lastRank = this.player === 'white' ? 7 : 0;
+                                    if (moving && moving.type === 'pawn' && cell.row === lastRank) {
+                                        // Pawn reaching the last rank: ask which piece to promote to.
+                                        this.promotionMove = { from: this.selectedSquare, to: posStr };
+                                        return;
+                                    }
                                     this.makeMove(this.selectedSquare, posStr);
                                     this.selectedSquare = null;
                                     return;
@@ -306,7 +328,7 @@ templ Chess() {
                                 }
                             },
 
-                            async makeMove(from, to) {
+                            async makeMove(from, to, promotion = '') {
                                 try {
                                     await fetch('/games/chess/move', {
                                         method: 'POST',
@@ -315,12 +337,31 @@ templ Chess() {
                                             game_id: this.gameId,
                                             player: this.player,
                                             from: from,
-                                            to: to
+                                            to: to,
+                                            promotion: promotion
                                         })
                                     });
                                 } catch (e) {
                                     console.error(e);
                                 }
+                            },
+
+                            pieceAt(posStr) {
+                                const col = posStr.charCodeAt(0) - 97;
+                                const row = parseInt(posStr[1], 10) - 1;
+                                return this.board[row] ? this.board[row][col] : null;
+                            },
+
+                            choosePromotion(piece) {
+                                if (!this.promotionMove) return;
+                                this.makeMove(this.promotionMove.from, this.promotionMove.to, piece);
+                                this.promotionMove = null;
+                                this.selectedSquare = null;
+                            },
+
+                            cancelPromotion() {
+                                this.promotionMove = null;
+                                this.selectedSquare = null;
                             },
 
                             copyLink() {
@@ -349,7 +390,8 @@ templ Chess() {
                                 this.validMoves = {};
                                 this.status = '';
                                 this.selectedSquare = null;
-                                
+                                this.promotionMove = null;
+
                                 const url = new URL(window.location);
                                 url.searchParams.delete('id');
                                 window.history.pushState({}, '', url);
