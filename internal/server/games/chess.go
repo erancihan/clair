@@ -87,10 +87,11 @@ func (s *chessService) StreamGame(ctx server_context.BackEndContext) http.Handle
 }
 
 type actionRequest struct {
-	GameID string `json:"game_id"`
-	Player string `json:"player"` // "white" or "black"
-	From   string `json:"from"`   // e.g. "e2"
-	To     string `json:"to"`     // e.g. "e4"
+	GameID    string `json:"game_id"`
+	Player    string `json:"player"`              // "white" or "black"
+	From      string `json:"from"`                // e.g. "e2"
+	To        string `json:"to"`                  // e.g. "e4"
+	Promotion string `json:"promotion,omitempty"` // "queen"/"rook"/"bishop"/"knight" for a promoting pawn
 }
 
 func (s *chessService) TakeAction(ctx server_context.BackEndContext) http.HandlerFunc {
@@ -107,7 +108,7 @@ func (s *chessService) TakeAction(ctx server_context.BackEndContext) http.Handle
 			return
 		}
 
-		err := instance.MakeMove(req.Player, req.From, req.To)
+		err := instance.MakeMove(req.Player, req.From, req.To, req.Promotion)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

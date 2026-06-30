@@ -2,6 +2,7 @@ package games_chess
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/erancihan/clair/internal/utils"
@@ -48,6 +49,7 @@ type Game struct {
 	ID      string
 	State   GameState
 	clients map[chan *Event]bool
+	history map[string]int // position-key counts for threefold-repetition detection
 }
 
 var (
@@ -72,11 +74,14 @@ func NewGame(gType GameType) (*Game, string) {
 			GameType: gType,         // Set to the provided game type
 		},
 		clients: make(map[chan *Event]bool),
+		history: make(map[string]int),
 	}
 
 	if gType == TypeAgent {
 		g.State.Status = StatusWaiting
 	}
+
+	g.history[g.positionKey()] = 1 // count the starting position
 
 	games.Store(gameID, g)
 	return g, gameID
@@ -121,7 +126,7 @@ func (g *Game) RemoveClient(ch chan *Event) {
 	close(ch)
 }
 
-func (g *Game) MakeMove(player string, from, to string) error {
+func (g *Game) MakeMove(player string, from, to, promotion string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -135,6 +140,11 @@ func (g *Game) MakeMove(player string, from, to string) error {
 	}
 	if playerColor != g.State.Turn {
 		return nil // Not this player's turn, ignore move
+	}
+
+	promo := PawnType // PawnType == no promotion
+	if pt, ok := PieceTypeFromString(promotion); ok {
+		promo = pt
 	}
 
 	// convert from/to like "e2" to board coordinates
@@ -154,12 +164,14 @@ func (g *Game) MakeMove(player string, from, to string) error {
 		return fmt.Errorf("no %s piece at %s", playerColor, from)
 	}
 
-	if err := g.State.Board.MovePiece(fromPos, toPos); err != nil {
+	if err := g.State.Board.MovePiece(fromPos, toPos, promo); err != nil {
 		return err
 	}
 
-	// Hand the turn to the opponent, then evaluate the resulting position.
+	// Hand the turn to the opponent, record the new position for repetition
+	// tracking, then evaluate the resulting position.
 	g.State.Turn = g.State.Turn.Opponent()
+	g.history[g.positionKey()]++
 	g.updateStatusLocked()
 
 	g.broadcastLocked()
@@ -171,19 +183,86 @@ func (g *Game) MakeMove(player string, from, to string) error {
 // stalemate (draw). Caller must hold g.mu.
 func (g *Game) updateStatusLocked() {
 	side := g.State.Turn
-	if g.State.Board.HasAnyLegalMove(side) {
-		return // game continues
+
+	if !g.State.Board.HasAnyLegalMove(side) {
+		if g.State.Board.InCheck(side) {
+			if side == White {
+				g.State.Status = StatusBlackWins
+			} else {
+				g.State.Status = StatusWhiteWins
+			}
+		} else {
+			g.State.Status = StatusDraw // stalemate
+		}
+		return
 	}
 
-	if g.State.Board.InCheck(side) {
-		if side == White {
-			g.State.Status = StatusBlackWins
-		} else {
-			g.State.Status = StatusWhiteWins
-		}
-	} else {
-		g.State.Status = StatusDraw // stalemate
+	// Automatic draws while legal moves remain.
+	switch {
+	case g.State.Board.InsufficientMaterial():
+		g.State.Status = StatusDraw
+	case g.State.Board.HalfmoveClock >= 100:
+		g.State.Status = StatusDraw // fifty-move rule
+	case g.history[g.positionKey()] >= 3:
+		g.State.Status = StatusDraw // threefold repetition
 	}
+}
+
+// positionKey renders the parts of the position that define repetition (piece
+// placement, side to move, castling rights, en-passant target) as a FEN-like
+// string, used as the threefold-repetition map key.
+func (g *Game) positionKey() string {
+	b := &g.State.Board
+	var sb strings.Builder
+
+	for r := 7; r >= 0; r-- {
+		empty := 0
+		for c := 0; c < 8; c++ {
+			p := b.Grid[r][c]
+			if p == nil {
+				empty++
+				continue
+			}
+			if empty > 0 {
+				sb.WriteByte(byte('0' + empty))
+				empty = 0
+			}
+			sb.WriteByte(fenChar(p))
+		}
+		if empty > 0 {
+			sb.WriteByte(byte('0' + empty))
+		}
+		if r > 0 {
+			sb.WriteByte('/')
+		}
+	}
+
+	sb.WriteByte(' ')
+	sb.WriteString(g.State.Turn.String())
+
+	sb.WriteByte(' ')
+	cr := b.CastlingRights
+	if cr.WhiteKingside {
+		sb.WriteByte('K')
+	}
+	if cr.WhiteQueenside {
+		sb.WriteByte('Q')
+	}
+	if cr.BlackKingside {
+		sb.WriteByte('k')
+	}
+	if cr.BlackQueenside {
+		sb.WriteByte('q')
+	}
+
+	sb.WriteByte(' ')
+	if b.EnPassant != nil {
+		sb.WriteString(positionToString(*b.EnPassant))
+	} else {
+		sb.WriteByte('-')
+	}
+
+	return sb.String()
 }
 
 func (g *Game) broadcastLocked() {

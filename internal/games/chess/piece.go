@@ -73,6 +73,23 @@ func (t PieceType) String() string {
 	return ""
 }
 
+// PieceTypeFromString parses a promotion choice from the wire. It only accepts
+// the legal promotion targets; everything else (including "pawn"/"king"/"")
+// reports false so callers can apply their own default.
+func PieceTypeFromString(s string) (PieceType, bool) {
+	switch s {
+	case "queen":
+		return QueenType, true
+	case "rook":
+		return RookType, true
+	case "bishop":
+		return BishopType, true
+	case "knight":
+		return KnightType, true
+	}
+	return PawnType, false
+}
+
 type Position struct {
 	Row int `json:"row"`
 	Col int `json:"col"`

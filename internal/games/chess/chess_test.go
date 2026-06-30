@@ -38,7 +38,7 @@ func perft(b *Board, side Color, depth int) int {
 	nodes := 0
 	for _, m := range moves {
 		nb := *b
-		nb.applyMove(m.From, m.To)
+		nb.applyMove(m.From, m.To, m.Promotion)
 		nodes += perft(&nb, side.Opponent(), depth-1)
 	}
 	return nodes
@@ -212,7 +212,7 @@ func TestMakeMoveRejectsMovingOpponentPiece(t *testing.T) {
 	g.State.Status = StatusOngoing // skip the lobby wait
 
 	// White to move tries to push a black pawn (e7-e6).
-	if err := g.MakeMove("white", "e7", "e6"); err == nil {
+	if err := g.MakeMove("white", "e7", "e6", ""); err == nil {
 		t.Error("expected error when moving an opponent's piece, got nil")
 	}
 	if g.State.Turn != White {
@@ -224,7 +224,7 @@ func TestMakeMoveHappyPathSwitchesTurn(t *testing.T) {
 	g, _ := NewGame(TypePvP)
 	g.State.Status = StatusOngoing
 
-	if err := g.MakeMove("white", "e2", "e4"); err != nil {
+	if err := g.MakeMove("white", "e2", "e4", ""); err != nil {
 		t.Fatalf("e2-e4 should be legal, got %v", err)
 	}
 	if g.State.Turn != Black {
@@ -236,5 +236,166 @@ func TestMakeMoveHappyPathSwitchesTurn(t *testing.T) {
 	}
 	if g.State.Board.Grid[mustPos("e2").Row][mustPos("e2").Col] != nil {
 		t.Error("expected e2 to be empty after e2-e4")
+	}
+}
+
+// --- Phase 1: special-move perft -------------------------------------------
+
+// Standard perft positions whose reference node counts exercise castling, en
+// passant (including the en-passant-discovered-check edge case) and promotion.
+const (
+	kiwipeteFEN  = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+	position3FEN = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
+	position5FEN = "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8"
+)
+
+func TestPerftSpecialPositions(t *testing.T) {
+	cases := []struct {
+		name  string
+		fen   string
+		depth int
+		want  int
+		slow  bool
+	}{
+		{"kiwipete d3 (castling)", kiwipeteFEN, 3, 97862, false},
+		{"position3 d4 (en passant)", position3FEN, 4, 43238, false},
+		{"position5 d3 (promotion)", position5FEN, 3, 62379, false},
+		{"kiwipete d4", kiwipeteFEN, 4, 4085603, true},
+	}
+
+	for _, tc := range cases {
+		if tc.slow && testing.Short() {
+			t.Logf("skipping %s in -short mode", tc.name)
+			continue
+		}
+		board, turn, err := NewBoardFromFEN(tc.fen)
+		if err != nil {
+			t.Fatalf("%s: parse FEN: %v", tc.name, err)
+		}
+		if got := perft(&board, turn, tc.depth); got != tc.want {
+			t.Errorf("%s: perft = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// --- Phase 1: special moves ------------------------------------------------
+
+func TestCastlingMovesRook(t *testing.T) {
+	board, _, err := NewBoardFromFEN("4k3/8/8/8/8/8/8/4K2R w K - 0 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := board.MovePiece(mustPos("e1"), mustPos("g1"), PawnType); err != nil {
+		t.Fatalf("kingside castling should be legal: %v", err)
+	}
+	if p := board.Grid[mustPos("g1").Row][mustPos("g1").Col]; p == nil || p.Type() != KingType {
+		t.Error("king should be on g1 after castling")
+	}
+	if p := board.Grid[mustPos("f1").Row][mustPos("f1").Col]; p == nil || p.Type() != RookType {
+		t.Error("rook should have moved to f1")
+	}
+	if board.Grid[mustPos("h1").Row][mustPos("h1").Col] != nil {
+		t.Error("h1 should be empty after castling")
+	}
+}
+
+func TestCannotCastleThroughCheck(t *testing.T) {
+	// Black rook on f8 attacks f1, the square the white king would pass over.
+	board, _, err := NewBoardFromFEN("4kr2/8/8/8/8/8/8/4K2R w K - 0 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsPos(board.LegalMoves(mustPos("e1")), "g1") {
+		t.Error("king must not castle through the attacked f1 square")
+	}
+}
+
+func TestEnPassantCapture(t *testing.T) {
+	// Black has just played d7-d5; white pawn e5 captures en passant onto d6.
+	board, _, err := NewBoardFromFEN("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := board.MovePiece(mustPos("e5"), mustPos("d6"), PawnType); err != nil {
+		t.Fatalf("en passant should be legal: %v", err)
+	}
+	if p := board.Grid[mustPos("d6").Row][mustPos("d6").Col]; p == nil || p.Type() != PawnType {
+		t.Error("capturing pawn should be on d6")
+	}
+	if board.Grid[mustPos("d5").Row][mustPos("d5").Col] != nil {
+		t.Error("the captured pawn on d5 should be removed")
+	}
+}
+
+func TestPromotionToQueen(t *testing.T) {
+	board, _, err := NewBoardFromFEN("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := board.MovePiece(mustPos("a7"), mustPos("a8"), QueenType); err != nil {
+		t.Fatalf("promotion should be legal: %v", err)
+	}
+	p := board.Grid[mustPos("a8").Row][mustPos("a8").Col]
+	if p == nil || p.Type() != QueenType || p.Color() != White {
+		t.Errorf("a8 should hold a white queen, got %v", p)
+	}
+}
+
+// --- Phase 1: draws --------------------------------------------------------
+
+func TestInsufficientMaterial(t *testing.T) {
+	cases := []struct {
+		fen  string
+		want bool
+	}{
+		{"4k3/8/8/8/8/8/8/4K3 w - - 0 1", true},   // K vs K
+		{"4k3/8/8/8/8/8/8/4KB2 w - - 0 1", true},  // K+B vs K
+		{"4k3/8/8/8/8/8/8/4KN2 w - - 0 1", true},  // K+N vs K
+		{"4k3/8/8/8/8/8/8/3QK3 w - - 0 1", false}, // K+Q vs K
+		{"4k3/8/8/8/8/8/8/R3K3 w - - 0 1", false}, // K+R vs K
+	}
+	for _, tc := range cases {
+		board, _, err := NewBoardFromFEN(tc.fen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := board.InsufficientMaterial(); got != tc.want {
+			t.Errorf("InsufficientMaterial(%q) = %v, want %v", tc.fen, got, tc.want)
+		}
+	}
+}
+
+func TestFiftyMoveRuleDraw(t *testing.T) {
+	board, _, err := NewBoardFromFEN("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	board.HalfmoveClock = 100
+	g := &Game{State: GameState{Board: board, Turn: White, Status: StatusOngoing}, history: map[string]int{}}
+	g.updateStatusLocked()
+	if g.State.Status != StatusDraw {
+		t.Errorf("expected draw by the fifty-move rule, got %q", g.State.Status)
+	}
+}
+
+func TestThreefoldRepetitionDraw(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.State.Status = StatusOngoing
+
+	// Shuffling both knights out and back returns to the start position; two
+	// full cycles make it the third occurrence.
+	cycle := [...]struct{ player, from, to string }{
+		{"white", "g1", "f3"}, {"black", "g8", "f6"},
+		{"white", "f3", "g1"}, {"black", "f6", "g8"},
+	}
+	for i := 0; i < 2; i++ {
+		for _, m := range cycle {
+			if err := g.MakeMove(m.player, m.from, m.to, ""); err != nil {
+				t.Fatalf("%s-%s: %v", m.from, m.to, err)
+			}
+		}
+	}
+	if g.State.Status != StatusDraw {
+		t.Errorf("expected draw by threefold repetition, got %q", g.State.Status)
 	}
 }

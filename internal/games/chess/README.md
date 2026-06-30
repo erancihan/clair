@@ -32,12 +32,13 @@ Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
 ## TODO
 
 ### Phase 1 — complete the ruleset
-- [ ] Implement promotion
-- [ ] Implement castling
-- [ ] Implement en passant
-- [ ] Implement draw by the fifty-move rule
-- [ ] Implement draw by repetition detection
-- [ ] Implement draw by insufficient material detection
+- [x] Implement promotion (with UI picker)
+- [x] Implement castling
+- [x] Implement en passant
+- [x] Implement draw by the fifty-move rule
+- [x] Implement draw by repetition detection
+- [x] Implement draw by insufficient material detection
+- [x] FEN import (`NewBoardFromFEN`)
 - [ ] Resign / draw offer & agreement
 
 ### Phase 2 — session & platform robustness
