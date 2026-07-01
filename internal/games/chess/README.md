@@ -53,4 +53,4 @@ Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
 - [x] AI opponent (alpha-beta search, `TypeAgent`)
 - [x] Game lobby / matchmaking (Quick Match)
 - [x] Last-move / check highlighting, captured-piece tray
-- [ ] FEN / PGN import (PGN & FEN export already shipped)
+- [x] FEN import + FEN/PGN export (PGN import — SAN parsing — still open)

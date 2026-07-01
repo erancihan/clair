@@ -7,7 +7,8 @@ import (
 )
 
 type createGameRequest struct {
-	GameMode string `json:"game_mode"` // "pvp" or "agent"
+	GameMode string `json:"game_mode"`     // "pvp" or "agent"
+	FEN      string `json:"fen,omitempty"` // optional starting position (chess)
 }
 
 type GameService interface {

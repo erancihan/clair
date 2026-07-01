@@ -43,7 +43,17 @@ func (s *chessService) CreateGame(ctx server_context.BackEndContext) http.Handle
 			return
 		}
 
-		instance, id := game.NewGame(gType)
+		var instance *game.Game
+		var id string
+		if request.FEN != "" {
+			var err error
+			if instance, id, err = game.NewGameFromFEN(gType, request.FEN); err != nil {
+				http.Error(w, "invalid FEN: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			instance, id = game.NewGame(gType)
+		}
 		seat, token := instance.Join() // the creator takes the white seat
 
 		w.Header().Set("Content-Type", "application/json")

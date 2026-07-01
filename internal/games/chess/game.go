@@ -167,6 +167,20 @@ var store Store
 func SetStore(s Store) { store = s }
 
 func NewGame(gType GameType) (*Game, string) {
+	return newGame(gType, NewBoard(), White)
+}
+
+// NewGameFromFEN creates a game whose starting position is parsed from FEN.
+func NewGameFromFEN(gType GameType, fen string) (*Game, string, error) {
+	board, turn, err := NewBoardFromFEN(fen)
+	if err != nil {
+		return nil, "", err
+	}
+	g, id := newGame(gType, board, turn)
+	return g, id, nil
+}
+
+func newGame(gType GameType, board Board, turn Color) (*Game, string) {
 	gameID := utils.GenerateGameID()
 	for {
 		if _, exists := games.Load(gameID); !exists {
@@ -178,10 +192,10 @@ func NewGame(gType GameType) (*Game, string) {
 	g := &Game{
 		ID: gameID,
 		State: GameState{
-			Board:       NewBoard(),
-			Turn:        White,
+			Board:       board,
+			Turn:        turn,
 			Status:      StatusWaiting, // Waiting for player 2 in PvP
-			GameType:    gType,         // Set to the provided game type
+			GameType:    gType,
 			WhiteTimeMs: initialClockMs,
 			BlackTimeMs: initialClockMs,
 			Moves:       []string{},
@@ -189,10 +203,6 @@ func NewGame(gType GameType) (*Game, string) {
 		clients:      make(map[chan *Event]bool),
 		history:      make(map[string]int),
 		lastActivity: time.Now(),
-	}
-
-	if gType == TypeAgent {
-		g.State.Status = StatusWaiting
 	}
 
 	g.history[g.positionKey()] = 1 // count the starting position
