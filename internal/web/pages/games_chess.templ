@@ -92,6 +92,20 @@ templ Chess() {
                             </div>
                         </div>
 
+                        <!-- Captured pieces -->
+                        <div x-show="status === 'Ongoing' || (status !== '' && status !== 'Waiting')" x-cloak class="w-full max-w-[480px] flex justify-between items-center mb-2 px-1 min-h-[1.25rem]">
+                            <div class="flex items-center flex-wrap gap-0.5">
+                                <template x-for="(pc, i) in capturedBy('white')" :key="'w'+i">
+                                    <div class="w-4 h-4 opacity-80" x-html="getPieceSVG({ color: 'black', type: pc })"></div>
+                                </template>
+                            </div>
+                            <div class="flex items-center flex-wrap gap-0.5 justify-end">
+                                <template x-for="(pc, i) in capturedBy('black')" :key="'b'+i">
+                                    <div class="w-4 h-4 opacity-80" x-html="getPieceSVG({ color: 'white', type: pc })"></div>
+                                </template>
+                            </div>
+                        </div>
+
                         <!-- Board Grid -->
                         <div class="relative w-full max-w-[480px] aspect-square rounded-lg border-4 border-zinc-200 dark:border-zinc-800 overflow-hidden mb-8 shadow-sm">
                             <div class="grid grid-cols-8 grid-rows-8 w-full h-full">
@@ -107,6 +121,10 @@ templ Chess() {
                                             'cursor-default': status !== 'Ongoing' || turn !== player || (!isMyPiece(cell) && (!selectedSquare || !isValidMove(cell)))
                                         }"
                                     >
+                                        <!-- Last-move highlight -->
+                                        <div x-show="cell.posString === lastFrom || cell.posString === lastTo" class="absolute inset-0 bg-yellow-400/30 pointer-events-none"></div>
+                                        <!-- Check highlight -->
+                                        <div x-show="cell.posString === checkSquare" class="absolute inset-0 bg-red-500/40 pointer-events-none"></div>
                                         <!-- Highlight dot for valid move -->
                                         <div x-show="selectedSquare && isValidMove(cell) && !cell.piece" class="absolute inset-0 flex justify-center items-center pointer-events-none">
                                             <div class="w-1/4 h-1/4 rounded-full bg-black/20 dark:bg-black/40"></div>
@@ -216,6 +234,9 @@ templ Chess() {
                             clockNow: 0, // ticks every 250ms to drive the running clock
                             moves: [], // SAN move list
                             pgnCopied: false,
+                            lastFrom: '',
+                            lastTo: '',
+                            checkSquare: '',
 
                             init() {
                                 // Initialize empty board
@@ -318,6 +339,9 @@ templ Chess() {
                                         this.blackTimeMs = event.data.black_time_ms;
                                         this.clockSyncAt = Date.now();
                                         this.moves = event.data.moves || [];
+                                        this.lastFrom = event.data.last_from || '';
+                                        this.lastTo = event.data.last_to || '';
+                                        this.checkSquare = event.data.check_square || '';
                                         // Deselect on opponent move
                                         this.selectedSquare = null;
                                     } else if (event.type === 'error') {
@@ -492,6 +516,25 @@ templ Chess() {
                                 }
                             },
 
+                            // Pieces of the opponent's color captured by `color`, derived from the
+                            // board (approximate after promotions).
+                            capturedBy(color) {
+                                const opp = color === 'white' ? 'black' : 'white';
+                                const initial = { pawn: 8, knight: 2, bishop: 2, rook: 2, queen: 1 };
+                                const counts = { pawn: 0, knight: 0, bishop: 0, rook: 0, queen: 0 };
+                                for (let r = 0; r < 8; r++) {
+                                    for (let c = 0; c < 8; c++) {
+                                        const p = this.board[r] ? this.board[r][c] : null;
+                                        if (p && p.color === opp && counts[p.type] !== undefined) counts[p.type]++;
+                                    }
+                                }
+                                const out = [];
+                                for (const type of ['queen', 'rook', 'bishop', 'knight', 'pawn']) {
+                                    for (let i = 0; i < Math.max(0, initial[type] - counts[type]); i++) out.push(type);
+                                }
+                                return out;
+                            },
+
                             copyLink() {
                                 navigator.clipboard.writeText(window.location.href);
                                 this.copied = true;
@@ -524,6 +567,9 @@ templ Chess() {
                                 this.whiteTimeMs = 0;
                                 this.blackTimeMs = 0;
                                 this.moves = [];
+                                this.lastFrom = '';
+                                this.lastTo = '';
+                                this.checkSquare = '';
 
                                 const url = new URL(window.location);
                                 url.searchParams.delete('id');

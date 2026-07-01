@@ -71,8 +71,9 @@ Goal: it feels like a real chess site.
       alpha-beta (negamax) search with capture-ordered pruning, playing black and
       replying asynchronously after each human move. "Play vs Computer" in the UI.
 - [ ] Lobby / matchmaking (list open games, play a random opponent).
-- [ ] Board UX: move history, last-move + check highlighting, captured-piece tray,
-      drag-and-drop, sounds; drop the 🚧 marker on the games page.
+- [x] Board UX: move history, last-move + check highlighting, captured-piece
+      tray, and dropped the 🚧 marker on the games page (drag-and-drop / sounds
+      still open).
 - [ ] FEN / PGN import & export (engine state already maps cleanly to FEN).
 
 ## Phase 4 — Stretch
