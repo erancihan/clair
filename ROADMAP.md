@@ -47,12 +47,13 @@ Validation: standard perft positions pass to reference counts — start position
 to depth 5, Kiwipete (castling) to depth 4 = 4,085,603, Position 3 (en passant /
 pins), Position 5 (promotion) — plus per-rule unit tests.
 
-## Phase 2 — Session & platform robustness
+## Phase 2 — Session & platform robustness 🚧 in progress
 
 Goal: trustworthy multiplayer that survives restarts and abuse.
 
-- [ ] Bind the white/black seat to a session/user (not a client-asserted string);
-      read-only spectators; clean reconnection.
+- [x] Bind the white/black seat to a secret token (the server no longer trusts
+      the client-asserted color); a `/join` endpoint assigns seats; read-only
+      spectators; token-based reconnection survives refresh.
 - [ ] Game lifecycle: inactivity timeout + a janitor that evicts finished/abandoned
       games (today the `sync.Map` leaks forever).
 - [ ] Persistence: store games + move history (PGN) in SQLite so restarts don't

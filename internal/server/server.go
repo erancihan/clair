@@ -143,6 +143,7 @@ func (s *backend) Routes() http.Handler {
 				templ.Handler(web.Base("Chess", web.Chess())).ServeHTTP(w, r)
 			})
 			route.HandleFunc("POST /create", games.Chess.CreateGame(s.context))
+			route.HandleFunc("POST /join", games.Chess.JoinGame(s.context))
 			route.HandleFunc("GET /stream", games.Chess.StreamGame(s.context))
 			route.HandleFunc("POST /move", games.Chess.TakeAction(s.context))
 		})

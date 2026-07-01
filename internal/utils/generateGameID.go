@@ -2,6 +2,7 @@ package utils
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"math/big"
 )
 
@@ -17,4 +18,12 @@ func GenerateGameID() string {
 	}
 
 	return string(bytes[:4]) + "-" + string(bytes[4:])
+}
+
+// GenerateToken returns a random 48-character hex token, used to authorize a
+// player's seat within a game.
+func GenerateToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
