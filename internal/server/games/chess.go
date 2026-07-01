@@ -1,12 +1,20 @@
 package games
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
 	game "github.com/erancihan/clair/internal/games/chess"
 	server_context "github.com/erancihan/clair/internal/server/context"
 )
+
+// StartChessCleanup launches the background janitor that evicts finished and
+// abandoned chess games. It is wired from server startup with the server's
+// context.
+func StartChessCleanup(ctx context.Context) {
+	game.StartCleanup(ctx)
+}
 
 type chessService struct{}
 

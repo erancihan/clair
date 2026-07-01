@@ -27,6 +27,9 @@ type backend struct {
 }
 
 func NewBackEnd(ctx context.Context, logger *zap.Logger, valkey valkey.Client, pool *gorm.DB) *backend {
+	// Start the background janitor that evicts finished/abandoned in-memory games.
+	games.StartChessCleanup(ctx)
+
 	return &backend{
 		context: server_context.BackEndContext{
 			DBConn: pool,

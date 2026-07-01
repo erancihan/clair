@@ -1,9 +1,11 @@
 package games_chess
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erancihan/clair/internal/utils"
 )
@@ -59,6 +61,8 @@ type Game struct {
 	// (the client-supplied color is not trusted).
 	whiteToken string
 	blackToken string
+
+	lastActivity time.Time // last state change or client connect/disconnect
 }
 
 // Join assigns the caller to the next open seat and returns the seat name
@@ -124,8 +128,9 @@ func NewGame(gType GameType) (*Game, string) {
 			Status:   StatusWaiting, // Waiting for player 2 in PvP
 			GameType: gType,         // Set to the provided game type
 		},
-		clients: make(map[chan *Event]bool),
-		history: make(map[string]int),
+		clients:      make(map[chan *Event]bool),
+		history:      make(map[string]int),
+		lastActivity: time.Now(),
 	}
 
 	if gType == TypeAgent {
@@ -149,6 +154,8 @@ func (g *Game) AddClient() chan *Event {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	g.lastActivity = time.Now()
+
 	ch := make(chan *Event, 10) // Buffered channel to prevent blocking
 	g.clients[ch] = true
 
@@ -169,6 +176,7 @@ func (g *Game) RemoveClient(ch chan *Event) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	g.lastActivity = time.Now()
 	delete(g.clients, ch)
 	close(ch)
 }
@@ -392,7 +400,57 @@ func (g *Game) positionKey() string {
 	return sb.String()
 }
 
+const (
+	cleanupInterval  = 5 * time.Minute
+	finishedGameTTL  = 10 * time.Minute // finished games kept this long for late viewers
+	abandonedGameTTL = 30 * time.Minute // games with no connected clients
+)
+
+var cleanupOnce sync.Once
+
+// StartCleanup launches the background janitor that evicts finished and
+// abandoned games so the in-memory store does not grow without bound. It is
+// safe to call more than once; only the first call starts the loop, which runs
+// until ctx is cancelled.
+func StartCleanup(ctx context.Context) {
+	cleanupOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(cleanupInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case now := <-ticker.C:
+					runCleanup(now)
+				}
+			}
+		}()
+	})
+}
+
+// runCleanup removes games that finished a while ago or have been abandoned by
+// every client. Split out from the loop so it can be tested deterministically.
+func runCleanup(now time.Time) {
+	games.Range(func(key, value any) bool {
+		g := value.(*Game)
+
+		g.mu.Lock()
+		idle := now.Sub(g.lastActivity)
+		finished := g.State.Status != StatusOngoing && g.State.Status != StatusWaiting
+		abandoned := len(g.clients) == 0
+		g.mu.Unlock()
+
+		if (finished && idle > finishedGameTTL) || (abandoned && idle > abandonedGameTTL) {
+			games.Delete(key)
+		}
+		return true
+	})
+}
+
 func (g *Game) broadcastLocked() {
+	g.lastActivity = time.Now()
+
 	state := g.State
 	event := &Event{
 		Type:   "update",

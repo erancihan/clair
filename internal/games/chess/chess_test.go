@@ -1,6 +1,9 @@
 package games_chess
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // --- helpers ---------------------------------------------------------------
 
@@ -500,5 +503,31 @@ func TestSeatColorAuthorization(t *testing.T) {
 	}
 	if _, ok := g.SeatColor(""); ok {
 		t.Error("empty token must not be authorized")
+	}
+}
+
+// --- Phase 2: cleanup ------------------------------------------------------
+
+func TestCleanupEvictsFinishedGames(t *testing.T) {
+	g, id := NewGame(TypePvP)
+	g.mu.Lock()
+	g.State.Status = StatusWhiteWins
+	g.lastActivity = time.Now().Add(-time.Hour)
+	g.mu.Unlock()
+
+	runCleanup(time.Now())
+
+	if GetGame(id) != nil {
+		t.Error("a finished, long-idle game should have been evicted")
+	}
+}
+
+func TestCleanupKeepsFreshGames(t *testing.T) {
+	_, id := NewGame(TypePvP)
+
+	runCleanup(time.Now())
+
+	if GetGame(id) == nil {
+		t.Error("a fresh game should not be evicted")
 	}
 }
