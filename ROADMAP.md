@@ -58,7 +58,9 @@ Goal: trustworthy multiplayer that survives restarts and abuse.
       (30 min, no clients) games from the in-memory store, fixing the leak.
 - [ ] Persistence: store games + move history (PGN) in SQLite so restarts don't
       wipe in-progress games.
-- [ ] Turn clocks in `GameState`, decremented per turn, with auto-forfeit at zero.
+- [x] Turn clocks (10 min/side) in `GameState`, charged per move with a
+      server-side timer that auto-forfeits on flag; the client interpolates the
+      running clock between updates.
 
 ## Phase 3 — Features & polish
 
