@@ -691,3 +691,62 @@ func TestLoadSnapshot(t *testing.T) {
 		t.Error("reloaded game should be registered in the store")
 	}
 }
+
+// --- Phase 3: AI -----------------------------------------------------------
+
+func TestBestMoveReturnsLegalMove(t *testing.T) {
+	b := NewBoard()
+	move, ok := bestMove(&b, White, 2)
+	if !ok {
+		t.Fatal("expected a move from the start position")
+	}
+	legal := false
+	for _, m := range b.GenerateLegalMoves(White) {
+		if m.From == move.From && m.To == move.To {
+			legal = true
+			break
+		}
+	}
+	if !legal {
+		t.Errorf("AI returned an illegal move %v-%v", move.From, move.To)
+	}
+}
+
+func TestBestMoveCapturesHangingQueen(t *testing.T) {
+	// Black to move; the white queen on d4 is undefended and the black queen on
+	// d8 can capture it down the open d-file.
+	b, turn, err := NewBoardFromFEN("3qk3/8/8/8/3Q4/8/8/4K3 b - - 0 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	move, ok := bestMove(&b, turn, 3)
+	if !ok {
+		t.Fatal("expected a move")
+	}
+	if move.From != mustPos("d8") || move.To != mustPos("d4") {
+		t.Errorf("AI should capture the hanging queen (d8xd4), got %v-%v", move.From, move.To)
+	}
+}
+
+func TestAgentPlaysReply(t *testing.T) {
+	g, _ := NewGame(TypeAgent)
+	g.Join() // human takes white; the game starts
+
+	// White moves, making it the agent's (black's) turn.
+	g.mu.Lock()
+	_ = g.applyMoveLocked(mustPos("e2"), mustPos("e4"), PawnType)
+	g.mu.Unlock()
+
+	g.playAgentReply() // synchronous, no artificial delay
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.stopClockLocked()
+
+	if len(g.State.Moves) != 2 {
+		t.Fatalf("expected white move + agent reply, got %d: %v", len(g.State.Moves), g.State.Moves)
+	}
+	if g.State.Turn != White {
+		t.Errorf("after the agent replies it should be White's turn, got %v", g.State.Turn)
+	}
+}

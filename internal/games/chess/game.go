@@ -77,6 +77,11 @@ type Game struct {
 
 const initialClockMs int64 = 10 * 60 * 1000 // 10 minutes per player
 
+const (
+	aiDepth         = 3
+	agentThinkDelay = 400 * time.Millisecond
+)
+
 // Join assigns the caller to the next open seat and returns the seat name
 // ("white", "black" or "spectator") together with its secret token ("" for a
 // spectator). When the second player takes the black seat, a waiting PvP game
@@ -88,6 +93,12 @@ func (g *Game) Join() (seat string, token string) {
 	switch {
 	case g.whiteToken == "":
 		g.whiteToken = utils.GenerateToken()
+		// In a game against the AI the human takes white and play begins at once.
+		if g.State.GameType == TypeAgent && g.State.Status == StatusWaiting {
+			g.State.Status = StatusOngoing
+			g.startClockLocked()
+			g.broadcastLocked()
+		}
 		return "white", g.whiteToken
 	case g.blackToken == "":
 		g.blackToken = utils.GenerateToken()
@@ -300,17 +311,29 @@ func (g *Game) MakeMove(player string, from, to, promotion string) error {
 		return fmt.Errorf("no %s piece at %s", playerColor, from)
 	}
 
-	// Render SAN from the pre-move position, before the board is mutated.
-	san := moveSAN(&g.State.Board, fromPos, toPos, promo)
-
-	if err := g.State.Board.MovePiece(fromPos, toPos, promo); err != nil {
+	if err := g.applyMoveLocked(fromPos, toPos, promo); err != nil {
 		return err
 	}
 
-	// A move supersedes any pending draw offer.
-	g.State.DrawOfferedBy = nil
+	// If this is a game against the AI and it is now the agent's turn, respond.
+	if g.State.GameType == TypeAgent && g.State.Status == StatusOngoing && g.State.Turn == Black {
+		go g.agentMove()
+	}
 
-	// Charge the mover for the time they used this turn.
+	return nil
+}
+
+// applyMoveLocked applies an already-validated move, updating SAN, clocks, turn,
+// repetition history and status, then broadcasts. Caller holds g.mu.
+func (g *Game) applyMoveLocked(from, to Position, promo PieceType) error {
+	// Render SAN from the pre-move position, before the board is mutated.
+	san := moveSAN(&g.State.Board, from, to, promo)
+
+	if err := g.State.Board.MovePiece(from, to, promo); err != nil {
+		return err
+	}
+
+	g.State.DrawOfferedBy = nil // a move supersedes any pending draw offer
 	g.chargeClockLocked()
 
 	// Hand the turn to the opponent, record the new position for repetition
@@ -321,17 +344,46 @@ func (g *Game) MakeMove(player string, from, to, promotion string) error {
 
 	// Append the check/checkmate marker and record the move in SAN.
 	if g.State.Status == StatusWhiteWins || g.State.Status == StatusBlackWins {
-		san += "#" // the only wins MakeMove can produce are by checkmate
+		san += "#" // the only wins this flow produces are by checkmate
 	} else if g.State.Board.InCheck(g.State.Turn) {
 		san += "+"
 	}
 	g.State.Moves = append(g.State.Moves, san)
 
-	// Re-arm the timeout for the new side to move, or stop it if the game ended.
 	g.armClockLocked()
-
 	g.broadcastLocked()
 	return nil
+}
+
+// agentMove waits briefly (so the reply feels natural) then plays the AI's move.
+func (g *Game) agentMove() {
+	time.Sleep(agentThinkDelay)
+	g.playAgentReply()
+}
+
+// playAgentReply searches for and plays the AI's move (Black). The search runs
+// without the lock; the board is snapshotted first and the result re-validated
+// before it is applied.
+func (g *Game) playAgentReply() {
+	g.mu.Lock()
+	if g.State.GameType != TypeAgent || g.State.Status != StatusOngoing || g.State.Turn != Black {
+		g.mu.Unlock()
+		return
+	}
+	boardCopy := g.State.Board
+	g.mu.Unlock()
+
+	move, ok := bestMove(&boardCopy, Black, aiDepth)
+	if !ok {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.State.GameType != TypeAgent || g.State.Status != StatusOngoing || g.State.Turn != Black {
+		return // state changed while searching
+	}
+	_ = g.applyMoveLocked(move.From, move.To, move.Promotion)
 }
 
 // Resign ends the game in favor of the resigning player's opponent.
