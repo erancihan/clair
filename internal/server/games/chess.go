@@ -208,3 +208,13 @@ func (s *chessService) PGN(ctx server_context.BackEndContext) http.HandlerFunc {
 		_, _ = w.Write([]byte(instance.PGN()))
 	}
 }
+
+// OpenGames lists PvP games waiting for a second player (for matchmaking).
+func (s *chessService) OpenGames(ctx server_context.BackEndContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"games": game.ListOpenGames(),
+		})
+	}
+}

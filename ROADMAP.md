@@ -70,7 +70,8 @@ Goal: it feels like a real chess site.
 - [x] AI opponent: `TypeAgent` enabled for chess — a material-evaluation
       alpha-beta (negamax) search with capture-ordered pruning, playing black and
       replying asynchronously after each human move. "Play vs Computer" in the UI.
-- [ ] Lobby / matchmaking (list open games, play a random opponent).
+- [x] Lobby / matchmaking: `GET /open` lists PvP games waiting for a player, and
+      a "Quick Match" button joins a random one (or opens a new game to wait).
 - [x] Board UX: move history, last-move + check highlighting, captured-piece
       tray, and dropped the 🚧 marker on the games page (drag-and-drop / sounds
       still open).

@@ -248,6 +248,22 @@ func LoadSnapshot(s Snapshot) (*Game, error) {
 	return g, nil
 }
 
+// ListOpenGames returns the IDs of PvP games still waiting for a second player.
+func ListOpenGames() []string {
+	var out []string
+	games.Range(func(key, value any) bool {
+		g := value.(*Game)
+		g.mu.Lock()
+		open := g.State.GameType == TypePvP && g.State.Status == StatusWaiting && g.blackToken == ""
+		g.mu.Unlock()
+		if open {
+			out = append(out, key.(string))
+		}
+		return true
+	})
+	return out
+}
+
 func (g *Game) AddClient() chan *Event {
 	g.mu.Lock()
 	defer g.mu.Unlock()

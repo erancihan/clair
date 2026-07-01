@@ -750,3 +750,32 @@ func TestAgentPlaysReply(t *testing.T) {
 		t.Errorf("after the agent replies it should be White's turn, got %v", g.State.Turn)
 	}
 }
+
+// --- Phase 3: matchmaking --------------------------------------------------
+
+func TestListOpenGames(t *testing.T) {
+	g, id := NewGame(TypePvP)
+	g.Join() // white only -> still waiting for an opponent
+
+	if !contains(ListOpenGames(), id) {
+		t.Error("a PvP game waiting for a second player should be listed as open")
+	}
+
+	g.Join() // black joins -> game starts
+	g.mu.Lock()
+	g.stopClockLocked()
+	g.mu.Unlock()
+
+	if contains(ListOpenGames(), id) {
+		t.Error("a started game should no longer be listed as open")
+	}
+}
+
+func contains(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
