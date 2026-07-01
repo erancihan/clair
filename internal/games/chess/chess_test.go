@@ -456,3 +456,49 @@ func TestMoveClearsDrawOffer(t *testing.T) {
 		t.Error("making a move should clear the pending draw offer")
 	}
 }
+
+// --- Phase 2: seat identity ------------------------------------------------
+
+func TestJoinAssignsSeatsAndStartsGame(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+
+	seat1, tok1 := g.Join()
+	if seat1 != "white" || tok1 == "" {
+		t.Fatalf("first join should be white with a token, got %q %q", seat1, tok1)
+	}
+	if g.State.Status != StatusWaiting {
+		t.Errorf("game should wait until the second player joins, got %q", g.State.Status)
+	}
+
+	seat2, tok2 := g.Join()
+	if seat2 != "black" || tok2 == "" {
+		t.Fatalf("second join should be black with a token, got %q %q", seat2, tok2)
+	}
+	if g.State.Status != StatusOngoing {
+		t.Errorf("game should start once black joins, got %q", g.State.Status)
+	}
+
+	seat3, tok3 := g.Join()
+	if seat3 != "spectator" || tok3 != "" {
+		t.Errorf("third join should be a tokenless spectator, got %q %q", seat3, tok3)
+	}
+}
+
+func TestSeatColorAuthorization(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	_, wt := g.Join()
+	_, bt := g.Join()
+
+	if c, ok := g.SeatColor(wt); !ok || c != "white" {
+		t.Errorf("white token should resolve to white, got %q %v", c, ok)
+	}
+	if c, ok := g.SeatColor(bt); !ok || c != "black" {
+		t.Errorf("black token should resolve to black, got %q %v", c, ok)
+	}
+	if _, ok := g.SeatColor("bogus"); ok {
+		t.Error("unknown token must not be authorized")
+	}
+	if _, ok := g.SeatColor(""); ok {
+		t.Error("empty token must not be authorized")
+	}
+}

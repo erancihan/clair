@@ -10,7 +10,11 @@ import (
 
 type chessService struct{}
 
-var Chess GameService = &chessService{}
+// Chess is stored as the concrete type (not the GameService interface) so the
+// chess-only JoinGame handler is reachable from the router.
+var Chess = &chessService{}
+
+var _ GameService = Chess
 
 func (s *chessService) CreateGame(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -27,12 +31,45 @@ func (s *chessService) CreateGame(ctx server_context.BackEndContext) http.Handle
 		}
 
 		instance, id := game.NewGame(game.TypePvP)
+		seat, token := instance.Join() // the creator takes the white seat
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"game_id": id,
-			"player":  "white", // Creator is always white in this simple implementation
+			"player":  seat,
+			"token":   token,
 			"type":    instance.State.GameType,
+		})
+	}
+}
+
+type joinGameRequest struct {
+	GameID string `json:"game_id"`
+}
+
+// JoinGame assigns the caller to an open seat (or spectator) and returns the
+// seat color plus its secret token. It is chess-specific and not part of the
+// shared GameService interface.
+func (s *chessService) JoinGame(ctx server_context.BackEndContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req joinGameRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		instance := game.GetGame(req.GameID)
+		if instance == nil {
+			http.Error(w, "game not found", http.StatusNotFound)
+			return
+		}
+
+		seat, token := instance.Join()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"player": seat,
+			"token":  token,
 		})
 	}
 }
@@ -88,7 +125,7 @@ func (s *chessService) StreamGame(ctx server_context.BackEndContext) http.Handle
 
 type actionRequest struct {
 	GameID    string `json:"game_id"`
-	Player    string `json:"player"`              // "white" or "black"
+	Token     string `json:"token"`               // seat token authorizing the action
 	Action    string `json:"action,omitempty"`    // "move" (default), "resign", "offer_draw", "accept_draw", "decline_draw"
 	From      string `json:"from"`                // e.g. "e2"
 	To        string `json:"to"`                  // e.g. "e4"
@@ -109,18 +146,26 @@ func (s *chessService) TakeAction(ctx server_context.BackEndContext) http.Handle
 			return
 		}
 
+		// The seat token is authoritative for identity; the client cannot pick
+		// which color it plays.
+		color, ok := instance.SeatColor(req.Token)
+		if !ok {
+			http.Error(w, "not a player in this game", http.StatusForbidden)
+			return
+		}
+
 		var err error
 		switch req.Action {
 		case "resign":
-			err = instance.Resign(req.Player)
+			err = instance.Resign(color)
 		case "offer_draw":
-			err = instance.OfferDraw(req.Player)
+			err = instance.OfferDraw(color)
 		case "accept_draw":
-			err = instance.AcceptDraw(req.Player)
+			err = instance.AcceptDraw(color)
 		case "decline_draw":
-			err = instance.DeclineDraw(req.Player)
+			err = instance.DeclineDraw(color)
 		default: // "move" or empty
-			err = instance.MakeMove(req.Player, req.From, req.To, req.Promotion)
+			err = instance.MakeMove(color, req.From, req.To, req.Promotion)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

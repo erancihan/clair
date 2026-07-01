@@ -53,6 +53,54 @@ type Game struct {
 	State   GameState
 	clients map[chan *Event]bool
 	history map[string]int // position-key counts for threefold-repetition detection
+
+	// Secret per-seat tokens. A request is authorized to move a color only if it
+	// presents the matching token; this is what actually binds a person to a seat
+	// (the client-supplied color is not trusted).
+	whiteToken string
+	blackToken string
+}
+
+// Join assigns the caller to the next open seat and returns the seat name
+// ("white", "black" or "spectator") together with its secret token ("" for a
+// spectator). When the second player takes the black seat, a waiting PvP game
+// starts.
+func (g *Game) Join() (seat string, token string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	switch {
+	case g.whiteToken == "":
+		g.whiteToken = utils.GenerateToken()
+		return "white", g.whiteToken
+	case g.blackToken == "":
+		g.blackToken = utils.GenerateToken()
+		if g.State.GameType == TypePvP && g.State.Status == StatusWaiting {
+			g.State.Status = StatusOngoing
+			g.broadcastLocked()
+		}
+		return "black", g.blackToken
+	default:
+		return "spectator", ""
+	}
+}
+
+// SeatColor resolves a seat token to the color it is authorized to play, or
+// ("", false) for spectators and unknown tokens.
+func (g *Game) SeatColor(token string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	switch {
+	case token == "":
+		return "", false
+	case token == g.whiteToken:
+		return "white", true
+	case token == g.blackToken:
+		return "black", true
+	default:
+		return "", false
+	}
 }
 
 var (
@@ -104,18 +152,14 @@ func (g *Game) AddClient() chan *Event {
 	ch := make(chan *Event, 10) // Buffered channel to prevent blocking
 	g.clients[ch] = true
 
+	// Send the current state to the newly connected client. (Game start is
+	// driven by seat occupancy in Join, not by the number of SSE clients, so a
+	// player opening two tabs no longer starts the game.)
+	state := g.State
 	ch <- &Event{
 		Type:   "update",
 		GameID: g.ID,
-		Data:   &g.State,
-	}
-
-	// if PvP and we have 2 clients attached, start game
-	if g.State.GameType == TypePvP && g.State.Status == StatusWaiting {
-		if len(g.clients) >= 2 {
-			g.State.Status = StatusOngoing
-			g.broadcastLocked()
-		}
+		Data:   &state,
 	}
 
 	return ch
