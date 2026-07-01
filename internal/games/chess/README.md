@@ -50,7 +50,7 @@ Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
 - [x] Auto-forfeit on flag
 
 ### Phase 3 — features & polish
-- [ ] AI opponent (enable `TypeAgent`)
+- [x] AI opponent (alpha-beta search, `TypeAgent`)
 - [ ] Implement game lobby and matchmaking
-- [ ] Move history, last-move/check highlighting, captured-piece tray
-- [ ] FEN / PGN import & export
+- [ ] Last-move / check highlighting, captured-piece tray
+- [ ] FEN / PGN import (PGN & FEN export already shipped)

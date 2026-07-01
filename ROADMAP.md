@@ -63,13 +63,13 @@ Goal: trustworthy multiplayer that survives restarts and abuse.
       server-side timer that auto-forfeits on flag; the client interpolates the
       running clock between updates.
 
-## Phase 3 — Features & polish
+## Phase 3 — Features & polish 🚧 in progress
 
 Goal: it feels like a real chess site.
 
-- [ ] AI opponent: enable `TypeAgent` for chess (random legal move first, then
-      material-eval minimax + alpha-beta with iterative deepening), triggered
-      asynchronously like the tic-tac-toe agent.
+- [x] AI opponent: `TypeAgent` enabled for chess — a material-evaluation
+      alpha-beta (negamax) search with capture-ordered pruning, playing black and
+      replying asynchronously after each human move. "Play vs Computer" in the UI.
 - [ ] Lobby / matchmaking (list open games, play a random opponent).
 - [ ] Board UX: move history, last-move + check highlighting, captured-piece tray,
       drag-and-drop, sounds; drop the 🚧 marker on the games page.

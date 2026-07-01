@@ -32,13 +32,18 @@ func (s *chessService) CreateGame(ctx server_context.BackEndContext) http.Handle
 			return
 		}
 
-		// For now, we only support PvP mode for chess
-		if request.GameMode != "pvp" {
+		var gType game.GameType
+		switch request.GameMode {
+		case "pvp":
+			gType = game.TypePvP
+		case "agent":
+			gType = game.TypeAgent
+		default:
 			http.Error(w, "unsupported game mode", http.StatusBadRequest)
 			return
 		}
 
-		instance, id := game.NewGame(game.TypePvP)
+		instance, id := game.NewGame(gType)
 		seat, token := instance.Join() // the creator takes the white seat
 
 		w.Header().Set("Content-Type", "application/json")
