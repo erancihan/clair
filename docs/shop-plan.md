@@ -861,16 +861,409 @@ is a clean later swap. Add `internal/web/public/products/` to `.gitignore` for l
 
 ## 10. Testing
 
-Follow the existing `test/` + `go test ./test/...` setup. Highest-value unit tests (pure domain,
-no HTTP):
+Testing is **primarily endpoint (HTTP integration) testing**: each test drives the real
+`Routes()` handler through `net/http/httptest` with an in-memory SQLite DB and a `nil` Valkey
+client (so the cart uses its DB fallback store). A handful of pure-domain unit tests back the
+money/cart math. Everything lives under `test/` and runs with `go test ./test/... -v`.
 
-- `Cart.Upsert` / `SubtotalCents` / `Count` — add, merge, decrement-to-remove.
-- `FormatCents` — currencies, negatives, zero-padding.
-- `PlaceOrder` — snapshotting, subtotal math, out-of-stock rollback (in-memory SQLite).
-- `Slugify` — collisions/uniqueness.
+### 10.1 Test harness
 
-HTTP-level: a `httptest` request through `Routes()` asserting `/shop` renders and `/shop/admin`
-returns 403 without an admin session.
+```go
+package test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/server"
+	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+// newTestServer spins up the real Routes() against an isolated in-memory DB.
+// nil Valkey => the cart uses the DB fallback store, so no Valkey is needed in CI.
+func newTestServer(t *testing.T) (*httptest.Server, *gorm.DB) {
+	t.Helper()
+	// unique DSN per test => full isolation even when tests run in parallel
+	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.AutoMigrate(
+		&models.User{}, &models.Category{}, &models.Product{},
+		&models.ProductImage{}, &models.Order{}, &models.OrderItem{},
+	)
+	handler := server.NewBackEnd(context.Background(), zap.NewNop(), nil, db).Routes()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return ts, db
+}
+
+// newClient keeps a cookie jar (session + cart_id persist across requests) and does
+// NOT auto-follow redirects, so tests can assert 303 + Location.
+func newClient(t *testing.T) *http.Client {
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{
+		Jar:           jar,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+func seedAdmin(t *testing.T, db *gorm.DB, email, pw string) {
+	hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	db.Create(&models.User{Username: "admin", Email: email, Password: string(hash), Role: "admin"})
+}
+
+// loginAs authenticates c against the JSON login endpoint; the session cookie lands in c's jar.
+func loginAs(t *testing.T, ts *httptest.Server, c *http.Client, email, pw string) {
+	body := strings.NewReader(`{"email":"` + email + `","password":"` + pw + `"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/auth/login", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("login failed: err=%v status=%d", err, resp.StatusCode)
+	}
+}
+```
+
+Table-driven endpoint test (the pattern every table below compiles down to):
+
+```go
+func TestProductDetail(t *testing.T) {
+	ts, db := newTestServer(t)
+	db.Create(&models.Product{Slug: "blue-shirt", Title: "Blue Shirt", Status: models.ProductPublished, PriceCents: 1299, Currency: "USD"})
+	db.Create(&models.Product{Slug: "secret", Title: "Secret", Status: models.ProductDraft, PriceCents: 500, Currency: "USD"})
+
+	cases := []struct {
+		name, path string
+		wantStatus int
+		wantBody   string // substring; "" to skip
+	}{
+		{"published renders price", "/shop/products/blue-shirt", 200, "$12.99"},
+		{"unknown slug 404", "/shop/products/ghost", 404, ""},
+		{"draft hidden 404", "/shop/products/secret", 404, ""},
+		{"wrong method 405", "/shop/products/blue-shirt", 405, ""}, // via POST in the real test
+	}
+	c := newClient(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, _ := c.Get(ts.URL + tc.path)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("got %d want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantBody != "" {
+				b, _ := io.ReadAll(resp.Body)
+				if !strings.Contains(string(b), tc.wantBody) {
+					t.Fatalf("body missing %q", tc.wantBody)
+				}
+			}
+		})
+	}
+}
+```
+
+**Conventions used in the tables below**
+- *Type* column tags coverage: Happy, Validation, AuthN, AuthZ, Not found, Method, Boundary, Edge, State, Security.
+- Successful POSTs use Post/Redirect/Get → `303 See Other` with a `Location` header.
+- 🚩 marks a design decision the test *pins down* — confirm the intended behavior before writing the assertion.
+
+### 10.2 Unit tests (pure domain, no HTTP)
+
+| # | Target | Scenario | Expected |
+|---|---|---|---|
+| 1 | `Cart.Upsert` | add new / merge existing qty / qty≤0 removes line | items & quantities correct |
+| 2 | `Cart.SubtotalCents` / `Count` | mixed items & quantities | Σ(unit×qty); total item count |
+| 3 | `FormatCents` | 1299/USD, 0, negative, non-USD currency | `$12.99`, `$0.00`, `-$…`, `EUR …` |
+| 4 | `PlaceOrder` | snapshot lines, subtotal math, out-of-stock rollback, empty-cart error | order+items or `ErrOutOfStock`/`ErrEmptyCart`; stock unchanged on failure |
+| 5 | `Slugify` | spaces/case/punctuation, collision suffixing | stable, unique slugs |
+
+### 10.3 Storefront (public reads)
+
+#### `GET /shop/`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Landing renders | some published products + categories | `GET /shop/` | 200 | base shell, featured products & category links |
+| 2 | Edge | Empty catalog | no products | `GET /shop/` | 200 | empty-state, no product cards |
+| 3 | Edge | Only drafts exist | all products draft | `GET /shop/` | 200 | no products shown (published-only) |
+| 4 | Method | Wrong verb | — | `POST /shop/` | 405 | Method Not Allowed |
+
+#### `GET /shop/products`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Default first page | >12 published | `GET /shop/products` | 200 | 12 items, newest first |
+| 2 | Happy | Pagination | >12 published | `?page=2` | 200 | second page items |
+| 3 | Happy | Search match | product "Blue Shirt" | `?search=Blue` | 200 | only matching products |
+| 4 | Happy | Category filter | category "hats" populated | `?category=hats` | 200 | only that category's published |
+| 5 | Edge | Search no match | — | `?search=zzz` | 200 | empty result grid |
+| 6 | Edge | Drafts excluded | mixed draft/published | `GET /shop/products` | 200 | drafts absent |
+| 7 | Boundary | Page beyond range | 5 products | `?page=99` | 200 | empty grid, no error |
+| 8 | Boundary | page ≤0 / non-numeric | — | `?page=0` / `?page=abc` | 200 | defaults to page 1 |
+| 9 | Not found | Unknown category filter | — | `?category=nope` | 200 | empty list 🚩 (or 404?) |
+| 10 | Security | Search XSS | — | `?search=<script>` | 200 | value escaped (templ auto-escape) |
+| 11 | Method | Wrong verb | — | `POST /shop/products` | 405 | Method Not Allowed |
+
+#### `GET /shop/products/{slug}`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Published detail | published slug `x` | `GET …/x` | 200 | title, formatted price, add-to-cart form, images |
+| 2 | Edge | No images | product without images | `GET …/x` | 200 | renders without `<img>`, no crash |
+| 3 | Edge | Price formatting | price 1299 USD | `GET …/x` | 200 | shows `$12.99` |
+| 4 | Not found | Unknown slug | — | `GET …/ghost` | 404 | NotFound shell |
+| 5 | Not found | Draft product | slug `d` is draft | `GET …/d` | 404 | hidden |
+| 6 | Not found | Archived product | slug `a` archived | `GET …/a` | 404 | hidden |
+| 7 | Security | Malicious slug | — | `GET …/<script>` / `../` | 404 / escaped | no traversal, escaped |
+| 8 | Method | Wrong verb | — | `POST …/x` | 405 | Method Not Allowed |
+
+#### `GET /shop/categories/{slug}`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Category with products | "hats" has published products | `GET …/hats` | 200 | lists that category's published products |
+| 2 | Edge | Empty category | category exists, no products | `GET …/hats` | 200 | empty-state |
+| 3 | Happy | Pagination | >12 in category | `?page=2` | 200 | page 2 |
+| 4 | Not found | Unknown category | — | `GET …/none` | 404 | NotFound shell |
+| 5 | Method | Wrong verb | — | `POST …/hats` | 405 | Method Not Allowed |
+
+### 10.4 Cart
+
+#### `GET /shop/cart`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | View populated cart | `cart_id` cookie with items | `GET /shop/cart` | 200 | items, qty, line + subtotal totals |
+| 2 | Happy | Empty cart | cookie present, empty | `GET /shop/cart` | 200 | empty-cart message, checkout disabled |
+| 3 | Edge | No cookie → new cart | no `cart_id` | `GET /shop/cart` | 200 | `Set-Cookie: cart_id`; empty state |
+| 4 | Edge | Subtotal correctness | items qty 2 & 3 | `GET /shop/cart` | 200 | subtotal = Σ(unit×qty) |
+| 5 | Method | Wrong verb | — | `PUT /shop/cart` | 405 | Method Not Allowed |
+
+#### `POST /shop/cart/add`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Add new item | published `x`, no/empty cart | `slug=x&qty=1` | 303 | `Set-Cookie cart_id`; redirect `/shop/cart`; line added |
+| 2 | Happy | Merge quantity | `x` already in cart (qty 1) | `slug=x&qty=2` | 303 | qty → 3, single line |
+| 3 | Validation | Missing slug | — | `qty=1` | 404 | product not found |
+| 4 | Not found | Unknown slug | — | `slug=ghost&qty=1` | 404 | product not found |
+| 5 | Edge | Draft not addable | `d` is draft | `slug=d&qty=1` | 404 | published-only lookup fails |
+| 6 | Boundary | qty missing / 0 / negative | — | `slug=x` / `qty=0` / `qty=-3` | 303 | qty clamped to 1 |
+| 7 | Boundary | Non-numeric qty | — | `slug=x&qty=abc` | 303 | Atoi fails → qty 1 |
+| 8 | Boundary | Huge qty | — | `slug=x&qty=999999` | 303 | accepted; stock checked at checkout 🚩 |
+| 9 | Security | Price tampering | — | `slug=x&price=1` | 303 | price sourced from DB, form price ignored |
+| 10 | Security | CSRF | cross-site POST | `slug=x&qty=1` | 403 🚩 | rejected once CSRF tokens added |
+| 11 | Method | Wrong verb | — | `GET /shop/cart/add` | 405 | Method Not Allowed |
+
+#### `POST /shop/cart/update`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Change quantity | item in cart | `product_id=1&qty=5` | 303 | line qty → 5; redirect `/shop/cart` |
+| 2 | Edge | qty ≤0 removes line | item in cart | `product_id=1&qty=0` | 303 | line removed |
+| 3 | Edge | Product not in cart | — | `product_id=99&qty=2` | 303 | no-op |
+| 4 | Edge | No cart cookie | no cookie | `product_id=1&qty=2` | 303 | empty cart, no-op |
+| 5 | Validation | Missing product_id | — | `qty=2` | 400 / 303 🚩 | handled, no crash |
+| 6 | Boundary | Non-numeric id/qty | — | `product_id=x&qty=y` | 400 / 303 | handled, no crash |
+| 7 | Method | Wrong verb | — | `GET /shop/cart/update` | 405 | Method Not Allowed |
+
+#### `POST /shop/cart/remove`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Remove existing | item in cart | `product_id=1` | 303 | line removed; redirect `/shop/cart` |
+| 2 | Edge | Remove absent | not in cart | `product_id=99` | 303 | no-op |
+| 3 | State | Remove twice | — | `product_id=1` ×2 | 303 | second is no-op |
+| 4 | Validation | Missing product_id | — | (empty body) | 400 / 303 🚩 | handled |
+| 5 | Method | Wrong verb | — | `GET /shop/cart/remove` | 405 | Method Not Allowed |
+
+### 10.5 Checkout & Orders (public)
+
+#### `GET /shop/checkout`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Show form | non-empty cart cookie | `GET /shop/checkout` | 200 | shipping form + order summary |
+| 2 | Edge | Empty cart | empty / absent cart | `GET /shop/checkout` | 303 → `/shop/cart` 🚩 | redirect or empty-state |
+| 3 | Method | Wrong verb | — | `PUT /shop/checkout` | 405 | Method Not Allowed |
+
+#### `POST /shop/checkout`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Place order (guest) | non-empty cart, valid fields | `email,name,address,city,postal,country` | 303 | Order+OrderItems (`pending_payment`), stock decremented, cart cleared; redirect `/shop/orders/{number}` |
+| 2 | Edge | Snapshot integrity | product edited after order | edit product later | — | OrderItem keeps original title/price |
+| 3 | Edge | Empty cart | empty cart | valid fields | 400 🚩 | `ErrEmptyCart`, no order |
+| 4 | Edge | Out of stock | item qty > stock | valid fields | 409 / 400 🚩 | `ErrOutOfStock`, no order, stock unchanged (rollback) |
+| 5 | Boundary | Stock exactly equal | qty == stock | valid fields | 303 | succeeds, stock → 0 |
+| 6 | Validation | Missing required field | cart ok, no email | omit `email` | 400 | re-render with error, no order |
+| 7 | Validation | Invalid email | — | `email=notanemail` | 400 | error, no order |
+| 8 | State | Double submit | same cart posted twice | POST ×2 | 303 / 303 🚩 | recommend clear-on-success → 2nd sees empty cart |
+| 9 | Security | Price/total tampering | hidden price/total field | tampered fields | 303 | server recomputes totals from cart/DB |
+| 10 | Security | CSRF | cross-site POST | valid fields | 403 🚩 | rejected once CSRF added |
+| 11 | Method | Wrong verb | — | `DELETE /shop/checkout` | 405 | Method Not Allowed |
+
+#### `GET /shop/orders/{number}`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | View order | order `N` exists | `GET …/N` | 200 | items, totals, status |
+| 2 | Not found | Unknown number | — | `GET …/ZZZ` | 404 | NotFound shell |
+| 3 | Security | IDOR | guess another's number | `GET …/<other>` | 200 🚩 | no per-user check — consider signed token / login gate |
+| 4 | Method | Wrong verb | — | `POST …/N` | 405 | Method Not Allowed |
+
+### 10.6 Admin CMS (protected)
+
+**Admin access-control matrix** — applies to **every** `/shop/admin/*` route (assert once per route, or via a shared helper):
+
+| # | Scenario | State | Request | Expected status | Expected result |
+|---|---|---|---|---|---|
+| 1 | Unauthenticated | no session cookie | any `/shop/admin/*` | 401 | Unauthorized; handler never runs |
+| 2 | Invalid/expired session | malformed cookie | any admin route | 401 | Unauthorized |
+| 3 | Authenticated non-admin | `role=customer` session | any admin route | 403 | Forbidden |
+| 4 | Authenticated admin | `role=admin` session | any admin route | 2xx/3xx | proceeds per endpoint |
+| 5 | Session user deleted | valid cookie, user row gone | any admin route | 401 | Unauthorized (middleware re-checks user) |
+| 6 | Browser vs API | admin GET in a browser | any admin route | 401 🚩 | consider redirect to `/login` instead |
+
+Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ rows covered above.
+
+#### `GET /shop/admin/` · `GET /shop/admin/products` · `GET /shop/admin/products/new`
+
+| # | Type | Endpoint | Scenario | Request | Expected status | Expected result |
+|---|---|---|---|---|---|---|
+| 1 | Happy | `/shop/admin/` | Dashboard | `GET` | 200 | counts + links |
+| 2 | Happy | `/shop/admin/products` | List all statuses | `GET` | 200 | draft+published+archived, edit/delete links |
+| 3 | Happy | `/shop/admin/products` | Empty | `GET` | 200 | empty-state |
+| 4 | Happy | `/shop/admin/products/new` | Blank form | `GET` | 200 | empty form, `action=/shop/admin/products` |
+| 5 | Method | all three | Wrong verb | `POST`/`PUT` | 405 | Method Not Allowed |
+
+#### `POST /shop/admin/products` (create)
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Create published | admin, valid multipart | `title,price=12.99,status=published,sku,description` | 303 | Product row, slug from title, `PriceCents=1299`; redirect list |
+| 2 | Happy | Create draft | — | `status=draft` | 303 | created as draft |
+| 3 | Edge | Dollars → cents | — | `price=12.99` | 303 | `PriceCents=1299` |
+| 4 | Boundary | Free item | — | `price=0` | 303 | `PriceCents=0` allowed |
+| 5 | Validation | Missing title | — | omit `title` | 400 | error, no row |
+| 6 | Validation | Invalid price | — | `price=abc` / `price=-5` | 400 | error, no row |
+| 7 | Edge | Slug collision | title maps to existing slug | valid | 303 / 400 🚩 | unique slug (suffix) or error |
+| 8 | Security | XSS in fields | — | `title=<script>` | 303 | stored raw, escaped on render |
+| 9 | Method | Wrong verb | — | `PUT /shop/admin/products` | 405 | Method Not Allowed |
+
+#### `GET /shop/admin/products/{id}/edit`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Prefilled form | product `id=1` | `GET …/1/edit` | 200 | form with values + existing images |
+| 2 | Not found | Unknown id | — | `GET …/999/edit` | 404 | NotFound |
+| 3 | Boundary | Non-numeric id | — | `GET …/abc/edit` | 404 / 400 | handled |
+| 4 | Method | Wrong verb | — | `POST …/1/edit` | 405 | Method Not Allowed |
+
+#### `POST /shop/admin/products/{id}` (update)
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Update fields | product `id=1` | `title,price,status` | 303 | row updated; redirect |
+| 2 | State | Publish draft | draft product | `status=published` | 303 | now visible on storefront |
+| 3 | State | Archive | published product | `status=archived` | 303 | hidden from storefront |
+| 4 | Not found | Unknown id | — | `POST …/999` | 404 | NotFound |
+| 5 | Validation | Invalid price | — | `price=-1` | 400 | no change |
+| 6 | Boundary | Non-numeric id | — | `POST …/abc` | 404 / 400 | handled |
+| 7 | Method | Wrong verb | — | `DELETE …/1` | 405 | Method Not Allowed |
+
+#### `POST /shop/admin/products/{id}/delete`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Delete | product `id=1` | `POST …/1/delete` | 303 | soft-deleted (`DeletedAt`); gone from lists |
+| 2 | Not found | Unknown id | — | `POST …/999/delete` | 404 | NotFound |
+| 3 | State | Delete twice | — | `POST …/1/delete` ×2 | 303 → 404 | second no-op/404 |
+| 4 | Edge | Referenced by orders | product has OrderItems | `POST …/1/delete` | 303 | OrderItems keep snapshot (no cascade) |
+| 5 | Method | Wrong verb | — | `GET …/1/delete` | 405 | Method Not Allowed |
+
+#### `POST /shop/admin/products/{id}/images`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Upload image | product `id=1`, valid PNG | multipart `image` | 303 | file under `public/products/`, ProductImage row, `/public/…` URL; redirect edit |
+| 2 | Validation | No file | — | no `image` field | 400 | error |
+| 3 | Validation | Non-image type | upload `.exe` | multipart | 400 🚩 | rejected (ext/content-type check) |
+| 4 | Boundary | Too large (>10MB) | — | big file | 400 / 413 | rejected |
+| 5 | Not found | Unknown product id | — | `POST …/999/images` | 404 | NotFound |
+| 6 | Security | Filename traversal | `filename=../../x` | multipart | 303 | sanitized via `filepath.Base` |
+| 7 | Method | Wrong verb | — | `GET …/1/images` | 405 | Method Not Allowed |
+
+#### `GET /shop/admin/categories` · `POST /shop/admin/categories`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | List + form | admin | `GET /shop/admin/categories` | 200 | categories list + inline create form |
+| 2 | Happy | Create | admin | `POST name,description` | 303 | Category row, slug from name; redirect |
+| 3 | Edge | Parent category | parent exists | `POST name,parent_id=1` | 303 | nested category |
+| 4 | Validation | Missing name | — | `POST` (no name) | 400 | error |
+| 5 | Edge | Duplicate slug | name collides | `POST name` | 400 / 303 🚩 | unique enforced |
+| 6 | Validation | Invalid parent_id | parent 999 | `POST parent_id=999` | 400 🚩 | error / ignored |
+| 7 | Security | XSS name | — | `POST name=<x>` | 303 | escaped on render |
+| 8 | Method | Wrong verb | — | `PUT /shop/admin/categories` | 405 | Method Not Allowed |
+
+#### `GET /shop/admin/orders` · `GET /shop/admin/orders/{number}`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result |
+|---|---|---|---|---|---|---|
+| 1 | Happy | List orders | orders exist | `GET /shop/admin/orders` | 200 | number, status, total, email |
+| 2 | Happy | Empty | none | `GET /shop/admin/orders` | 200 | empty-state |
+| 3 | Edge | Filter by status | orders in mixed states | `?status=paid` | 200 🚩 | filtered (if implemented) |
+| 4 | Happy | Order detail | order `N` | `GET …/N` | 200 | item snapshots, totals, shipping, status control |
+| 5 | Not found | Unknown number | — | `GET …/ZZZ` | 404 | NotFound |
+| 6 | Method | Wrong verb | — | `PUT …/N` | 405 | Method Not Allowed |
+
+#### `POST /shop/admin/orders/{number}/status`
+
+| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|---|
+| 1 | Happy | Mark paid | order `N` = pending | `status=paid` | 303 | status updated; redirect detail |
+| 2 | Happy | Fulfil | order paid | `status=fulfilled` | 303 | updated |
+| 3 | Happy | Cancel | order pending/paid | `status=cancelled` | 303 | updated (consider restock 🚩) |
+| 4 | State | Same status | pending → pending | `status=pending_payment` | 303 | no-op OK |
+| 5 | State | Illegal transition | paid → pending | `status=pending_payment` | 400 / 303 🚩 | guard invalid transitions |
+| 6 | Validation | Invalid status value | — | `status=banana` | 400 | rejected, unchanged |
+| 7 | Not found | Unknown number | — | `POST …/ZZZ/status` | 404 | NotFound |
+| 8 | Security | CSRF | cross-site POST | `status=paid` | 403 🚩 | rejected once CSRF added |
+| 9 | Method | Wrong verb | — | `GET …/N/status` | 405 | Method Not Allowed |
+
+### 10.7 Cross-cutting & routing
+
+| # | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+|---|---|---|---|---|---|
+| 1 | Unknown path | — | `GET /shop/nonexistent` | 404 | NotFound shell |
+| 2 | Method-not-allowed | registered path, wrong verb | `DELETE /shop/products` | 405 | Method Not Allowed |
+| 3 | Static assets still served | — | `GET /static/css/main.css` | 200 | CSS from embed FS |
+| 4 | Public assets still served | — | `GET /public/favicon.svg` | 200 | served from disk |
+| 5 | Nav link present | — | `GET /shop/` | 200 | header includes `/shop` link |
+| 6 | Cart cookie attributes | first cart interaction | `POST /shop/cart/add` | 303 | `Set-Cookie cart_id` HttpOnly, `Path=/shop`, SameSite=Lax |
+| 7 | Base shell integrity | — | `GET /shop/` | 200 | dark-mode script, Alpine CDN, `main.css` link |
+| 8 | Admin auth uniformity | unauth request to each admin route | table over all `/shop/admin/*` | 401 | every route blocked |
+| 9 | CSRF token presence | state-changing forms | `GET` cart/checkout/admin forms | 200 🚩 | hidden CSRF token rendered (once implemented) |
+| 10 | Trailing slash | — | `GET /shop` vs `/shop/` | 200 / redirect 🚩 | document canonical form |
+| 11 | Security headers | — | `GET` any page | 200 🚩 | consider CSP / `X-Content-Type-Options` |
+
+### 10.8 Coverage checklist before merge
+
+- [ ] Every endpoint in §4.4 has a happy-path row **and** its `405` wrong-verb row.
+- [ ] Every `/shop/admin/*` route asserts the access-control matrix (401 unauth, 403 non-admin).
+- [ ] Cart lifecycle: add → merge → update → remove → cookie creation.
+- [ ] Checkout: success (stock ↓, cart cleared), empty-cart, out-of-stock rollback, validation.
+- [ ] All 🚩 design decisions resolved and the assertion updated to the chosen behavior.
 
 ---
 
