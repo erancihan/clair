@@ -183,3 +183,23 @@ func (s *chessService) TakeAction(ctx server_context.BackEndContext) http.Handle
 		w.WriteHeader(http.StatusOK)
 	}
 }
+
+// PGN returns the game's moves as a Portable Game Notation document.
+func (s *chessService) PGN(ctx server_context.BackEndContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "missing ID", http.StatusBadRequest)
+			return
+		}
+
+		instance := game.GetGame(id)
+		if instance == nil {
+			http.Error(w, "game not found", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(instance.PGN()))
+	}
+}
