@@ -54,8 +54,8 @@ Goal: trustworthy multiplayer that survives restarts and abuse.
 - [x] Bind the white/black seat to a secret token (the server no longer trusts
       the client-asserted color); a `/join` endpoint assigns seats; read-only
       spectators; token-based reconnection survives refresh.
-- [ ] Game lifecycle: inactivity timeout + a janitor that evicts finished/abandoned
-      games (today the `sync.Map` leaks forever).
+- [x] Game lifecycle: a background janitor evicts finished (10 min) and abandoned
+      (30 min, no clients) games from the in-memory store, fixing the leak.
 - [ ] Persistence: store games + move history (PGN) in SQLite so restarts don't
       wipe in-progress games.
 - [ ] Turn clocks in `GameState`, decremented per turn, with auto-forfeit at zero.
