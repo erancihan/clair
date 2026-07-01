@@ -51,6 +51,6 @@ Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
 
 ### Phase 3 — features & polish
 - [x] AI opponent (alpha-beta search, `TypeAgent`)
-- [ ] Implement game lobby and matchmaking
+- [x] Game lobby / matchmaking (Quick Match)
 - [x] Last-move / check highlighting, captured-piece tray
 - [ ] FEN / PGN import (PGN & FEN export already shipped)
