@@ -40,6 +40,11 @@ type GameState struct {
 	// DrawOfferedBy is the color of the player with an outstanding draw offer,
 	// or nil when there is none.
 	DrawOfferedBy *Color `json:"draw_offered_by"`
+
+	// Remaining time per player, as of the start of the current turn. Clients
+	// interpolate the running side's clock locally between updates.
+	WhiteTimeMs int64 `json:"white_time_ms"`
+	BlackTimeMs int64 `json:"black_time_ms"`
 }
 
 type Event struct {
@@ -62,8 +67,12 @@ type Game struct {
 	whiteToken string
 	blackToken string
 
-	lastActivity time.Time // last state change or client connect/disconnect
+	lastActivity  time.Time   // last state change or client connect/disconnect
+	turnStartedAt time.Time   // when the current side's clock started running
+	timer         *time.Timer // fires when the side to move runs out of time
 }
+
+const initialClockMs int64 = 10 * 60 * 1000 // 10 minutes per player
 
 // Join assigns the caller to the next open seat and returns the seat name
 // ("white", "black" or "spectator") together with its secret token ("" for a
@@ -81,6 +90,7 @@ func (g *Game) Join() (seat string, token string) {
 		g.blackToken = utils.GenerateToken()
 		if g.State.GameType == TypePvP && g.State.Status == StatusWaiting {
 			g.State.Status = StatusOngoing
+			g.startClockLocked()
 			g.broadcastLocked()
 		}
 		return "black", g.blackToken
@@ -123,10 +133,12 @@ func NewGame(gType GameType) (*Game, string) {
 	g := &Game{
 		ID: gameID,
 		State: GameState{
-			Board:    NewBoard(),
-			Turn:     White,
-			Status:   StatusWaiting, // Waiting for player 2 in PvP
-			GameType: gType,         // Set to the provided game type
+			Board:       NewBoard(),
+			Turn:        White,
+			Status:      StatusWaiting, // Waiting for player 2 in PvP
+			GameType:    gType,         // Set to the provided game type
+			WhiteTimeMs: initialClockMs,
+			BlackTimeMs: initialClockMs,
 		},
 		clients:      make(map[chan *Event]bool),
 		history:      make(map[string]int),
@@ -226,11 +238,17 @@ func (g *Game) MakeMove(player string, from, to, promotion string) error {
 	// A move supersedes any pending draw offer.
 	g.State.DrawOfferedBy = nil
 
+	// Charge the mover for the time they used this turn.
+	g.chargeClockLocked()
+
 	// Hand the turn to the opponent, record the new position for repetition
 	// tracking, then evaluate the resulting position.
 	g.State.Turn = g.State.Turn.Opponent()
 	g.history[g.positionKey()]++
 	g.updateStatusLocked()
+
+	// Re-arm the timeout for the new side to move, or stop it if the game ended.
+	g.armClockLocked()
 
 	g.broadcastLocked()
 	return nil
@@ -255,6 +273,7 @@ func (g *Game) Resign(player string) error {
 		g.State.Status = StatusWhiteWins
 	}
 	g.State.DrawOfferedBy = nil
+	g.stopClockLocked()
 	g.broadcastLocked()
 	return nil
 }
@@ -296,6 +315,7 @@ func (g *Game) AcceptDraw(player string) error {
 
 	g.State.Status = StatusDraw
 	g.State.DrawOfferedBy = nil
+	g.stopClockLocked()
 	g.broadcastLocked()
 	return nil
 }
@@ -398,6 +418,85 @@ func (g *Game) positionKey() string {
 	}
 
 	return sb.String()
+}
+
+// startClockLocked begins the side-to-move's clock; called when the game
+// transitions to Ongoing.
+func (g *Game) startClockLocked() {
+	g.turnStartedAt = time.Now()
+	g.armClockLocked()
+}
+
+// chargeClockLocked subtracts the time spent this turn from the mover's clock
+// and restarts the turn timestamp.
+func (g *Game) chargeClockLocked() {
+	if g.turnStartedAt.IsZero() {
+		return // clock never started (e.g. a directly-constructed test game)
+	}
+	elapsed := time.Since(g.turnStartedAt).Milliseconds()
+	if g.State.Turn == White {
+		g.State.WhiteTimeMs = max(0, g.State.WhiteTimeMs-elapsed)
+	} else {
+		g.State.BlackTimeMs = max(0, g.State.BlackTimeMs-elapsed)
+	}
+	g.turnStartedAt = time.Now()
+}
+
+// remainingMsLocked reports a color's remaining time, accounting for the clock
+// currently ticking on the side to move.
+func (g *Game) remainingMsLocked(c Color) int64 {
+	ms := g.State.WhiteTimeMs
+	if c == Black {
+		ms = g.State.BlackTimeMs
+	}
+	if g.State.Status == StatusOngoing && g.State.Turn == c && !g.turnStartedAt.IsZero() {
+		ms -= time.Since(g.turnStartedAt).Milliseconds()
+	}
+	return max(0, ms)
+}
+
+// armClockLocked (re)schedules the auto-forfeit timer for the side to move.
+func (g *Game) armClockLocked() {
+	g.stopClockLocked()
+	if g.State.Status != StatusOngoing || g.turnStartedAt.IsZero() {
+		return
+	}
+	turn := g.State.Turn
+	remaining := g.remainingMsLocked(turn)
+	g.timer = time.AfterFunc(time.Duration(remaining)*time.Millisecond, func() {
+		g.flagTimeout(turn)
+	})
+}
+
+func (g *Game) stopClockLocked() {
+	if g.timer != nil {
+		g.timer.Stop()
+		g.timer = nil
+	}
+}
+
+// flagTimeout ends the game when `turn` has run out of time and it is still
+// their move. The opponent wins on time.
+func (g *Game) flagTimeout(turn Color) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.State.Status != StatusOngoing || g.State.Turn != turn {
+		return // a move was made, or the game already ended
+	}
+	if g.remainingMsLocked(turn) > 0 {
+		return // not actually out of time
+	}
+
+	if turn == White {
+		g.State.WhiteTimeMs = 0
+		g.State.Status = StatusBlackWins
+	} else {
+		g.State.BlackTimeMs = 0
+		g.State.Status = StatusWhiteWins
+	}
+	g.stopClockLocked()
+	g.broadcastLocked()
 }
 
 const (

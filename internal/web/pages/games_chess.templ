@@ -79,6 +79,16 @@ templ Chess() {
                             </template>
                         </div>
 
+                        <!-- Clocks -->
+                        <div x-show="status === 'Ongoing' || (status !== '' && status !== 'Waiting')" x-cloak class="w-full flex justify-center gap-3 mb-4">
+                            <div class="px-4 py-2 rounded-lg font-mono text-lg font-bold flex items-center gap-1.5 transition-colors" :class="turn === 'white' && status === 'Ongoing' ? 'bg-indigo-600 text-white' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'">
+                                <span>♔</span><span x-text="fmtClock('white')"></span>
+                            </div>
+                            <div class="px-4 py-2 rounded-lg font-mono text-lg font-bold flex items-center gap-1.5 transition-colors" :class="turn === 'black' && status === 'Ongoing' ? 'bg-zinc-800 text-white dark:bg-zinc-100 dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'">
+                                <span>♚</span><span x-text="fmtClock('black')"></span>
+                            </div>
+                        </div>
+
                         <!-- Board Grid -->
                         <div class="relative w-full max-w-[480px] aspect-square rounded-lg border-4 border-zinc-200 dark:border-zinc-800 overflow-hidden mb-8 shadow-sm">
                             <div class="grid grid-cols-8 grid-rows-8 w-full h-full">
@@ -178,6 +188,10 @@ templ Chess() {
                             selectedSquare: null, // Holds string like 'e2'
                             promotionMove: null, // { from, to } awaiting a promotion choice
                             drawOfferedBy: null, // 'white' | 'black' | null
+                            whiteTimeMs: 0,
+                            blackTimeMs: 0,
+                            clockSyncAt: 0, // Date.now() when the last update arrived
+                            clockNow: 0, // ticks every 250ms to drive the running clock
 
                             init() {
                                 // Initialize empty board
@@ -186,7 +200,11 @@ templ Chess() {
                                     for (let c = 0; c < 8; c++) row.push(null);
                                     this.board.push(row);
                                 }
-                                
+
+                                // Drive the running clock's display locally between updates.
+                                this.clockNow = Date.now();
+                                setInterval(() => { this.clockNow = Date.now(); }, 250);
+
                                 const params = new URLSearchParams(window.location.search);
                                 const id = params.get('id');
                                 if (id) {
@@ -272,6 +290,9 @@ templ Chess() {
                                         this.gameType = event.data.game_type;
                                         this.turn = event.data.turn;
                                         this.drawOfferedBy = event.data.draw_offered_by;
+                                        this.whiteTimeMs = event.data.white_time_ms;
+                                        this.blackTimeMs = event.data.black_time_ms;
+                                        this.clockSyncAt = Date.now();
                                         // Deselect on opponent move
                                         this.selectedSquare = null;
                                     } else if (event.type === 'error') {
@@ -422,6 +443,18 @@ templ Chess() {
                                 }
                             },
 
+                            fmtClock(color) {
+                                let ms = color === 'white' ? this.whiteTimeMs : this.blackTimeMs;
+                                if (this.status === 'Ongoing' && this.turn === color) {
+                                    ms -= (this.clockNow - this.clockSyncAt);
+                                }
+                                if (ms < 0) ms = 0;
+                                const totalSec = Math.floor(ms / 1000);
+                                const m = Math.floor(totalSec / 60);
+                                const s = totalSec % 60;
+                                return m + ':' + String(s).padStart(2, '0');
+                            },
+
                             copyLink() {
                                 navigator.clipboard.writeText(window.location.href);
                                 this.copied = true;
@@ -451,6 +484,8 @@ templ Chess() {
                                 this.selectedSquare = null;
                                 this.promotionMove = null;
                                 this.drawOfferedBy = null;
+                                this.whiteTimeMs = 0;
+                                this.blackTimeMs = 0;
 
                                 const url = new URL(window.location);
                                 url.searchParams.delete('id');

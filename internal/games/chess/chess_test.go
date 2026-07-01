@@ -531,3 +531,46 @@ func TestCleanupKeepsFreshGames(t *testing.T) {
 		t.Error("a fresh game should not be evicted")
 	}
 }
+
+// --- Phase 2: clocks -------------------------------------------------------
+
+func TestClockChargesMover(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.Join() // white
+	g.Join() // black -> game starts, white's clock running
+
+	g.mu.Lock()
+	before := g.State.WhiteTimeMs
+	g.turnStartedAt = time.Now().Add(-2 * time.Second) // pretend white thought for 2s
+	g.mu.Unlock()
+
+	if err := g.MakeMove("white", "e2", "e4", ""); err != nil {
+		t.Fatalf("e2-e4: %v", err)
+	}
+
+	g.mu.Lock()
+	spent := before - g.State.WhiteTimeMs
+	g.stopClockLocked() // avoid leaving the auto-forfeit timer pending
+	g.mu.Unlock()
+
+	if spent < 1500 {
+		t.Errorf("white should have been charged ~2s, got %dms", spent)
+	}
+}
+
+func TestFlagTimeoutAwardsOpponent(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.Join()
+	g.Join() // Ongoing, white to move
+
+	g.mu.Lock()
+	g.State.WhiteTimeMs = 0
+	g.turnStartedAt = time.Now()
+	g.mu.Unlock()
+
+	g.flagTimeout(White)
+
+	if g.State.Status != StatusBlackWins {
+		t.Errorf("white flagging on time should give Black Wins, got %q", g.State.Status)
+	}
+}
