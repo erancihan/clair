@@ -48,6 +48,12 @@ type GameState struct {
 
 	// Moves played so far, in Standard Algebraic Notation.
 	Moves []string `json:"moves"`
+
+	// Board highlights for the UI: the last move's squares and the square of a
+	// king currently in check ("" when none).
+	LastFrom    string `json:"last_from"`
+	LastTo      string `json:"last_to"`
+	CheckSquare string `json:"check_square"`
 }
 
 type Event struct {
@@ -342,13 +348,23 @@ func (g *Game) applyMoveLocked(from, to Position, promo PieceType) error {
 	g.history[g.positionKey()]++
 	g.updateStatusLocked()
 
-	// Append the check/checkmate marker and record the move in SAN.
+	// Append the check/checkmate marker, record SAN, and update board highlights.
+	inCheck := g.State.Board.InCheck(g.State.Turn)
 	if g.State.Status == StatusWhiteWins || g.State.Status == StatusBlackWins {
 		san += "#" // the only wins this flow produces are by checkmate
-	} else if g.State.Board.InCheck(g.State.Turn) {
+	} else if inCheck {
 		san += "+"
 	}
 	g.State.Moves = append(g.State.Moves, san)
+
+	g.State.LastFrom = positionToString(from)
+	g.State.LastTo = positionToString(to)
+	g.State.CheckSquare = ""
+	if g.State.Status == StatusOngoing && inCheck {
+		if kp, ok := g.State.Board.kingPos(g.State.Turn); ok {
+			g.State.CheckSquare = positionToString(kp)
+		}
+	}
 
 	g.armClockLocked()
 	g.broadcastLocked()
