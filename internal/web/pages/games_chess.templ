@@ -37,6 +37,13 @@ templ Chess() {
                                 Join
                             </button>
                         </div>
+                        <details class="mt-1">
+                            <summary class="text-xs text-zinc-400 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 select-none">Start from a position (FEN)</summary>
+                            <div class="flex gap-2 mt-2">
+                                <input type="text" x-model="fenInput" placeholder="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" class="flex-1 px-3 py-2 border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-zinc-100 placeholder-zinc-400 font-mono text-xs">
+                                <button @click="createGame('pvp', fenInput)" class="px-4 py-2 bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white rounded-lg hover:bg-zinc-700 dark:hover:bg-zinc-200 transition-colors text-sm font-semibold">Start</button>
+                            </div>
+                        </details>
                     </div>
 
                     <!-- Game Area -->
@@ -218,6 +225,7 @@ templ Chess() {
                         Alpine.data('chess', () => ({
                             gameId: '',
                             joinId: '',
+                            fenInput: '',
                             player: '',
                             token: '',
                             turn: 'white',
@@ -274,13 +282,17 @@ templ Chess() {
                                 }
                             },
 
-                            async createGame(gameMode) {
+                            async createGame(gameMode, fen = '') {
                                 try {
                                     const res = await fetch('/games/chess/create', {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ game_mode: gameMode })
+                                        body: JSON.stringify({ game_mode: gameMode, fen: fen })
                                     });
+                                    if (!res.ok) {
+                                        alert('Could not create game: ' + (await res.text()));
+                                        return;
+                                    }
                                     const data = await res.json();
                                     this.gameId = data.game_id;
                                     this.player = data.player; // 'white'

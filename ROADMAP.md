@@ -63,7 +63,7 @@ Goal: trustworthy multiplayer that survives restarts and abuse.
       server-side timer that auto-forfeits on flag; the client interpolates the
       running clock between updates.
 
-## Phase 3 — Features & polish 🚧 in progress
+## Phase 3 — Features & polish ✅ core done
 
 Goal: it feels like a real chess site.
 
@@ -75,7 +75,9 @@ Goal: it feels like a real chess site.
 - [x] Board UX: move history, last-move + check highlighting, captured-piece
       tray, and dropped the 🚧 marker on the games page (drag-and-drop / sounds
       still open).
-- [ ] FEN / PGN import & export (engine state already maps cleanly to FEN).
+- [x] FEN & PGN **export** (Board.FEN, the `/pgn` endpoint) and FEN **import**
+      (start a game from any position). PGN import (needs a SAN parser) is still
+      open, as are optional drag-and-drop and move sounds.
 
 ## Phase 4 — Stretch
 

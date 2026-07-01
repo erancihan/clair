@@ -779,3 +779,22 @@ func contains(ids []string, want string) bool {
 	}
 	return false
 }
+
+// --- Phase 3: FEN import ---------------------------------------------------
+
+func TestNewGameFromFEN(t *testing.T) {
+	g, id, err := NewGameFromFEN(TypePvP, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+	if err != nil {
+		t.Fatalf("new game from FEN: %v", err)
+	}
+	if g.State.Turn != Black {
+		t.Errorf("turn should be Black, got %v", g.State.Turn)
+	}
+	if GetGame(id) == nil {
+		t.Error("game should be registered in the store")
+	}
+
+	if _, _, err := NewGameFromFEN(TypePvP, "not a valid fen"); err == nil {
+		t.Error("expected an error for an invalid FEN")
+	}
+}
