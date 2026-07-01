@@ -47,7 +47,7 @@ Validation: standard perft positions pass to reference counts — start position
 to depth 5, Kiwipete (castling) to depth 4 = 4,085,603, Position 3 (en passant /
 pins), Position 5 (promotion) — plus per-rule unit tests.
 
-## Phase 2 — Session & platform robustness 🚧 in progress
+## Phase 2 — Session & platform robustness ✅ done
 
 Goal: trustworthy multiplayer that survives restarts and abuse.
 
@@ -56,8 +56,9 @@ Goal: trustworthy multiplayer that survives restarts and abuse.
       spectators; token-based reconnection survives refresh.
 - [x] Game lifecycle: a background janitor evicts finished (10 min) and abandoned
       (30 min, no clients) games from the in-memory store, fixing the leak.
-- [ ] Persistence: store games + move history (PGN) in SQLite so restarts don't
-      wipe in-progress games.
+- [x] Persistence: games (board FEN, clocks, tokens, SAN moves) are written
+      through to SQLite via GORM and in-progress games are reloaded on startup;
+      move history / PGN shipped separately.
 - [x] Turn clocks (10 min/side) in `GameState`, charged per move with a
       server-side timer that auto-forfeits on flag; the client interpolates the
       running clock between updates.

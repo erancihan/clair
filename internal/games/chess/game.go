@@ -124,6 +124,31 @@ var (
 	games sync.Map // map[string]*Game
 )
 
+// Snapshot is a serializable summary of a game, used for persistence.
+type Snapshot struct {
+	ID          string
+	GameType    int
+	Status      string
+	FEN         string
+	WhiteTimeMs int64
+	BlackTimeMs int64
+	WhiteToken  string
+	BlackToken  string
+	Moves       []string
+}
+
+// Store persists game snapshots. It is optional; when no store is installed
+// games live only in memory.
+type Store interface {
+	Save(Snapshot)
+	Delete(id string)
+}
+
+var store Store
+
+// SetStore installs the persistence backend.
+func SetStore(s Store) { store = s }
+
 func NewGame(gType GameType) (*Game, string) {
 	gameID := utils.GenerateGameID()
 	for {
@@ -164,6 +189,46 @@ func GetGame(id string) *Game {
 		return val.(*Game)
 	}
 	return nil
+}
+
+// LoadSnapshot reconstructs a game from a persisted snapshot and registers it in
+// the in-memory store. Live state (SSE clients, timers) is rebuilt fresh, and
+// the clock resumes from the persisted remaining time.
+func LoadSnapshot(s Snapshot) (*Game, error) {
+	board, turn, err := NewBoardFromFEN(s.FEN)
+	if err != nil {
+		return nil, err
+	}
+	moves := s.Moves
+	if moves == nil {
+		moves = []string{}
+	}
+
+	g := &Game{
+		ID: s.ID,
+		State: GameState{
+			Board:       board,
+			Turn:        turn,
+			Status:      Status(s.Status),
+			GameType:    GameType(s.GameType),
+			WhiteTimeMs: s.WhiteTimeMs,
+			BlackTimeMs: s.BlackTimeMs,
+			Moves:       moves,
+		},
+		clients:      make(map[chan *Event]bool),
+		history:      make(map[string]int),
+		whiteToken:   s.WhiteToken,
+		blackToken:   s.BlackToken,
+		lastActivity: time.Now(),
+	}
+	g.history[g.positionKey()] = 1 // prior repetition counts are not restored
+
+	if g.State.Status == StatusOngoing {
+		g.startClockLocked()
+	}
+
+	games.Store(s.ID, g)
+	return g, nil
 }
 
 func (g *Game) AddClient() chan *Event {
@@ -419,27 +484,7 @@ func (g *Game) positionKey() string {
 	b := &g.State.Board
 	var sb strings.Builder
 
-	for r := 7; r >= 0; r-- {
-		empty := 0
-		for c := 0; c < 8; c++ {
-			p := b.Grid[r][c]
-			if p == nil {
-				empty++
-				continue
-			}
-			if empty > 0 {
-				sb.WriteByte(byte('0' + empty))
-				empty = 0
-			}
-			sb.WriteByte(fenChar(p))
-		}
-		if empty > 0 {
-			sb.WriteByte(byte('0' + empty))
-		}
-		if r > 0 {
-			sb.WriteByte('/')
-		}
-	}
+	sb.WriteString(b.placementFEN())
 
 	sb.WriteByte(' ')
 	sb.WriteString(g.State.Turn.String())
@@ -591,13 +636,43 @@ func runCleanup(now time.Time) {
 
 		if (finished && idle > finishedGameTTL) || (abandoned && idle > abandonedGameTTL) {
 			games.Delete(key)
+			if store != nil {
+				store.Delete(g.ID)
+			}
 		}
 		return true
 	})
 }
 
+// snapshotLocked captures the game's persistable state (clocks reflect the live
+// remaining time).
+func (g *Game) snapshotLocked() Snapshot {
+	moves := make([]string, len(g.State.Moves))
+	copy(moves, g.State.Moves)
+	return Snapshot{
+		ID:          g.ID,
+		GameType:    int(g.State.GameType),
+		Status:      string(g.State.Status),
+		FEN:         g.State.Board.FEN(g.State.Turn),
+		WhiteTimeMs: g.remainingMsLocked(White),
+		BlackTimeMs: g.remainingMsLocked(Black),
+		WhiteToken:  g.whiteToken,
+		BlackToken:  g.blackToken,
+		Moves:       moves,
+	}
+}
+
+// saveLocked persists the game when a store is installed.
+func (g *Game) saveLocked() {
+	if store == nil {
+		return
+	}
+	store.Save(g.snapshotLocked())
+}
+
 func (g *Game) broadcastLocked() {
 	g.lastActivity = time.Now()
+	g.saveLocked()
 
 	state := g.State
 	event := &Event{

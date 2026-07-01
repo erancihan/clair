@@ -27,6 +27,10 @@ type backend struct {
 }
 
 func NewBackEnd(ctx context.Context, logger *zap.Logger, valkey valkey.Client, pool *gorm.DB) *backend {
+	// Reload persisted in-progress chess games and enable write-through persistence.
+	if err := games.InitChessPersistence(pool); err != nil {
+		logger.Error("failed to init chess persistence", zap.Error(err))
+	}
 	// Start the background janitor that evicts finished/abandoned in-memory games.
 	games.StartChessCleanup(ctx)
 

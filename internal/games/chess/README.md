@@ -41,12 +41,13 @@ Run the engine tests with `make test` or `go test ./internal/games/chess/...`.
 - [x] FEN import (`NewBoardFromFEN`)
 - [x] Resign / draw offer & agreement
 
-### Phase 2 — session & platform robustness
-- [ ] Bind the white/black seat to a session/user (reconnect + spectators)
-- [ ] Implement timeout and cleanup for inactive games
-- [ ] Implement game state persistence (database) + move history / PGN
-- [ ] Add turn timers
-- [ ] Auto-forfeit for inactive players
+### Phase 2 — session & platform robustness (done)
+- [x] Bind the seat to a secret token (reconnect + read-only spectators)
+- [x] Timeout/cleanup janitor for finished & abandoned games
+- [x] Game state persistence (SQLite via GORM) with startup reload
+- [x] Move history (SAN) + PGN export
+- [x] Turn clocks
+- [x] Auto-forfeit on flag
 
 ### Phase 3 — features & polish
 - [ ] AI opponent (enable `TypeAgent`)

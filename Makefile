@@ -71,4 +71,4 @@ db-down:
 #   make db-up && make test
 .PHONY: test
 test:
-	go test ./test/... ./internal/games/... -v
+	go test ./test/... ./internal/games/... ./internal/server/games/... -v

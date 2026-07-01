@@ -600,6 +600,76 @@ func pieceFromFEN(ch byte) Piece {
 	return nil
 }
 
+// placementFEN renders the piece-placement field of FEN (rank 8 down to 1).
+func (b *Board) placementFEN() string {
+	var sb strings.Builder
+	for r := 7; r >= 0; r-- {
+		empty := 0
+		for c := 0; c < 8; c++ {
+			p := b.Grid[r][c]
+			if p == nil {
+				empty++
+				continue
+			}
+			if empty > 0 {
+				sb.WriteByte(byte('0' + empty))
+				empty = 0
+			}
+			sb.WriteByte(fenChar(p))
+		}
+		if empty > 0 {
+			sb.WriteByte(byte('0' + empty))
+		}
+		if r > 0 {
+			sb.WriteByte('/')
+		}
+	}
+	return sb.String()
+}
+
+// FEN renders the full Forsyth–Edwards Notation for the position with `turn` to
+// move.
+func (b *Board) FEN(turn Color) string {
+	var sb strings.Builder
+	sb.WriteString(b.placementFEN())
+
+	sb.WriteByte(' ')
+	if turn == White {
+		sb.WriteByte('w')
+	} else {
+		sb.WriteByte('b')
+	}
+
+	sb.WriteByte(' ')
+	castleStart := sb.Len()
+	cr := b.CastlingRights
+	if cr.WhiteKingside {
+		sb.WriteByte('K')
+	}
+	if cr.WhiteQueenside {
+		sb.WriteByte('Q')
+	}
+	if cr.BlackKingside {
+		sb.WriteByte('k')
+	}
+	if cr.BlackQueenside {
+		sb.WriteByte('q')
+	}
+	if sb.Len() == castleStart {
+		sb.WriteByte('-')
+	}
+
+	sb.WriteByte(' ')
+	if b.EnPassant != nil {
+		sb.WriteString(positionToString(*b.EnPassant))
+	} else {
+		sb.WriteByte('-')
+	}
+
+	sb.WriteString(fmt.Sprintf(" %d %d", b.HalfmoveClock, b.FullmoveNumber))
+	return sb.String()
+}
+
 // fenChar renders a piece as its FEN letter (uppercase = white).
 func fenChar(p Piece) byte {
 	var ch byte
