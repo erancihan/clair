@@ -149,6 +149,7 @@ func (s *backend) Routes() http.Handler {
 			route.HandleFunc("POST /join", games.Chess.JoinGame(s.context))
 			route.HandleFunc("GET /stream", games.Chess.StreamGame(s.context))
 			route.HandleFunc("POST /move", games.Chess.TakeAction(s.context))
+			route.HandleFunc("GET /pgn", games.Chess.PGN(s.context))
 		})
 	})
 

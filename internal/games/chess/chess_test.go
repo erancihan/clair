@@ -1,6 +1,7 @@
 package games_chess
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -572,5 +573,61 @@ func TestFlagTimeoutAwardsOpponent(t *testing.T) {
 
 	if g.State.Status != StatusBlackWins {
 		t.Errorf("white flagging on time should give Black Wins, got %q", g.State.Status)
+	}
+}
+
+// --- Phase 2: SAN / PGN ----------------------------------------------------
+
+func TestMoveSAN(t *testing.T) {
+	start := NewBoard()
+	if san := moveSAN(&start, mustPos("g1"), mustPos("f3"), PawnType); san != "Nf3" {
+		t.Errorf("knight move: want Nf3, got %q", san)
+	}
+	if san := moveSAN(&start, mustPos("e2"), mustPos("e4"), PawnType); san != "e4" {
+		t.Errorf("pawn push: want e4, got %q", san)
+	}
+
+	cases := []struct {
+		name, fen, from, to string
+		promo               PieceType
+		want                string
+	}{
+		{"castling", "4k3/8/8/8/8/8/8/4K2R w K - 0 1", "e1", "g1", PawnType, "O-O"},
+		{"pawn capture", "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4", "d5", PawnType, "exd5"},
+		{"promotion", "4k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7", "a8", QueenType, "a8=Q"},
+		{"disambiguation", "4k3/8/8/8/8/2N5/8/4K1N1 w - - 0 1", "c3", "e2", PawnType, "Nce2"},
+	}
+	for _, tc := range cases {
+		b, _, err := NewBoardFromFEN(tc.fen)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if san := moveSAN(&b, mustPos(tc.from), mustPos(tc.to), tc.promo); san != tc.want {
+			t.Errorf("%s: want %q, got %q", tc.name, tc.want, san)
+		}
+	}
+}
+
+func TestMoveHistoryAndPGN(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.Join()
+	g.Join()
+
+	for _, m := range []struct{ player, from, to string }{
+		{"white", "e2", "e4"}, {"black", "e7", "e5"}, {"white", "g1", "f3"},
+	} {
+		if err := g.MakeMove(m.player, m.from, m.to, ""); err != nil {
+			t.Fatalf("%s-%s: %v", m.from, m.to, err)
+		}
+	}
+	g.mu.Lock()
+	g.stopClockLocked()
+	g.mu.Unlock()
+
+	if len(g.State.Moves) != 3 || g.State.Moves[0] != "e4" || g.State.Moves[2] != "Nf3" {
+		t.Fatalf("moves = %v, want [e4 e5 Nf3]", g.State.Moves)
+	}
+	if pgn := g.PGN(); !strings.Contains(pgn, "1. e4 e5 2. Nf3") {
+		t.Errorf("PGN missing expected move text:\n%s", pgn)
 	}
 }

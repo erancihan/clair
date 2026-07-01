@@ -146,6 +146,25 @@ templ Chess() {
                             </div>
                         </div>
 
+                        <!-- Move history -->
+                        <div x-show="moves.length > 0" x-cloak class="w-full max-w-sm mb-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Moves</span>
+                                <button @click="copyPGN()" class="text-xs font-semibold text-indigo-500 hover:text-indigo-600">
+                                    <span x-show="!pgnCopied">Copy PGN</span>
+                                    <span x-show="pgnCopied" x-cloak class="text-green-500">Copied!</span>
+                                </button>
+                            </div>
+                            <div class="max-h-32 overflow-y-auto text-sm font-mono bg-zinc-50 dark:bg-zinc-800/50 rounded-lg p-3 leading-7">
+                                <template x-for="(m, i) in moves" :key="i">
+                                    <span>
+                                        <span x-show="i % 2 === 0" class="text-zinc-400 mr-1" x-text="(Math.floor(i/2)+1) + '.'"></span>
+                                        <span class="text-zinc-800 dark:text-zinc-200 mr-2" x-text="m"></span>
+                                    </span>
+                                </template>
+                            </div>
+                        </div>
+
                         <button @click="resetSession" class="text-sm font-medium text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
                             Leave Game
                         </button>
@@ -192,6 +211,8 @@ templ Chess() {
                             blackTimeMs: 0,
                             clockSyncAt: 0, // Date.now() when the last update arrived
                             clockNow: 0, // ticks every 250ms to drive the running clock
+                            moves: [], // SAN move list
+                            pgnCopied: false,
 
                             init() {
                                 // Initialize empty board
@@ -293,6 +314,7 @@ templ Chess() {
                                         this.whiteTimeMs = event.data.white_time_ms;
                                         this.blackTimeMs = event.data.black_time_ms;
                                         this.clockSyncAt = Date.now();
+                                        this.moves = event.data.moves || [];
                                         // Deselect on opponent move
                                         this.selectedSquare = null;
                                     } else if (event.type === 'error') {
@@ -455,6 +477,18 @@ templ Chess() {
                                 return m + ':' + String(s).padStart(2, '0');
                             },
 
+                            async copyPGN() {
+                                try {
+                                    const res = await fetch('/games/chess/pgn?id=' + encodeURIComponent(this.gameId));
+                                    const pgn = await res.text();
+                                    await navigator.clipboard.writeText(pgn);
+                                    this.pgnCopied = true;
+                                    setTimeout(() => this.pgnCopied = false, 2000);
+                                } catch (e) {
+                                    console.error(e);
+                                }
+                            },
+
                             copyLink() {
                                 navigator.clipboard.writeText(window.location.href);
                                 this.copied = true;
@@ -486,6 +520,7 @@ templ Chess() {
                                 this.drawOfferedBy = null;
                                 this.whiteTimeMs = 0;
                                 this.blackTimeMs = 0;
+                                this.moves = [];
 
                                 const url = new URL(window.location);
                                 url.searchParams.delete('id');

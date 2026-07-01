@@ -45,6 +45,9 @@ type GameState struct {
 	// interpolate the running side's clock locally between updates.
 	WhiteTimeMs int64 `json:"white_time_ms"`
 	BlackTimeMs int64 `json:"black_time_ms"`
+
+	// Moves played so far, in Standard Algebraic Notation.
+	Moves []string `json:"moves"`
 }
 
 type Event struct {
@@ -139,6 +142,7 @@ func NewGame(gType GameType) (*Game, string) {
 			GameType:    gType,         // Set to the provided game type
 			WhiteTimeMs: initialClockMs,
 			BlackTimeMs: initialClockMs,
+			Moves:       []string{},
 		},
 		clients:      make(map[chan *Event]bool),
 		history:      make(map[string]int),
@@ -231,6 +235,9 @@ func (g *Game) MakeMove(player string, from, to, promotion string) error {
 		return fmt.Errorf("no %s piece at %s", playerColor, from)
 	}
 
+	// Render SAN from the pre-move position, before the board is mutated.
+	san := moveSAN(&g.State.Board, fromPos, toPos, promo)
+
 	if err := g.State.Board.MovePiece(fromPos, toPos, promo); err != nil {
 		return err
 	}
@@ -246,6 +253,14 @@ func (g *Game) MakeMove(player string, from, to, promotion string) error {
 	g.State.Turn = g.State.Turn.Opponent()
 	g.history[g.positionKey()]++
 	g.updateStatusLocked()
+
+	// Append the check/checkmate marker and record the move in SAN.
+	if g.State.Status == StatusWhiteWins || g.State.Status == StatusBlackWins {
+		san += "#" // the only wins MakeMove can produce are by checkmate
+	} else if g.State.Board.InCheck(g.State.Turn) {
+		san += "+"
+	}
+	g.State.Moves = append(g.State.Moves, san)
 
 	// Re-arm the timeout for the new side to move, or stop it if the game ended.
 	g.armClockLocked()
@@ -361,6 +376,40 @@ func (g *Game) updateStatusLocked() {
 	case g.history[g.positionKey()] >= 3:
 		g.State.Status = StatusDraw // threefold repetition
 	}
+}
+
+// PGN renders the game as Portable Game Notation.
+func (g *Game) PGN() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	result := "*"
+	switch g.State.Status {
+	case StatusWhiteWins:
+		result = "1-0"
+	case StatusBlackWins:
+		result = "0-1"
+	case StatusDraw:
+		result = "1/2-1/2"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[Event \"Casual Game\"]\n")
+	sb.WriteString("[Site \"clair\"]\n")
+	sb.WriteString("[White \"White\"]\n")
+	sb.WriteString("[Black \"Black\"]\n")
+	sb.WriteString("[Result \"" + result + "\"]\n\n")
+
+	for i, san := range g.State.Moves {
+		if i%2 == 0 {
+			sb.WriteString(fmt.Sprintf("%d. ", i/2+1))
+		}
+		sb.WriteString(san)
+		sb.WriteByte(' ')
+	}
+	sb.WriteString(result)
+	sb.WriteByte('\n')
+	return sb.String()
 }
 
 // positionKey renders the parts of the position that define repetition (piece
