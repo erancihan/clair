@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess · Phase 4 Gap Analysis</title>
+<style>html,body{margin:0;background:#f4f3f0}@media (prefers-color-scheme:dark){html,body{background:#0d0d0d}}</style>
+</head>
+<body>
+<div class="viz">
+  <style>
+    .viz {
+      --surface-1:#fcfcfb; --plane:#f4f3f0; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+      --grid:#e1e0d9; --ring:rgba(11,11,11,.10);
+      --sev-low:#b9b7b0; --sev-med:#fab219; --sev-high:#ec835a; --sev-crit:#d03b3b;
+      --accent:#2a78d6;
+      font-family:system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--ink);
+      background:var(--plane); padding:28px 22px; line-height:1.45;
+      -webkit-font-smoothing:antialiased;
+    }
+    @media (prefers-color-scheme:dark){ .viz{
+      --surface-1:#1a1a19; --plane:#0d0d0d; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --ring:rgba(255,255,255,.10);
+      --sev-low:#6f6e68; --sev-med:#fab219; --sev-high:#ec835a; --sev-crit:#d03b3b; --accent:#3987e5;
+    }}
+    :root[data-theme="dark"] .viz{
+      --surface-1:#1a1a19; --plane:#0d0d0d; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --ring:rgba(255,255,255,.10);
+      --sev-low:#6f6e68; --sev-med:#fab219; --sev-high:#ec835a; --sev-crit:#d03b3b; --accent:#3987e5;
+    }
+    :root[data-theme="light"] .viz{
+      --surface-1:#fcfcfb; --plane:#f4f3f0; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+      --grid:#e1e0d9; --ring:rgba(11,11,11,.10);
+      --sev-low:#b9b7b0; --sev-med:#fab219; --sev-high:#ec835a; --sev-crit:#d03b3b; --accent:#2a78d6;
+    }
+    .viz * { box-sizing:border-box; }
+    .viz h1{ font-size:22px; font-weight:700; margin:0 0 2px; letter-spacing:-.01em; }
+    .viz .sub{ color:var(--ink-2); font-size:13px; margin:0 0 20px; }
+    .viz .card{ background:var(--surface-1); border:1px solid var(--ring); border-radius:14px;
+      padding:18px 18px 20px; margin:0 0 18px; box-shadow:0 1px 2px rgba(0,0,0,.03); }
+    .viz .card h2{ font-size:14px; font-weight:700; margin:0 0 3px; }
+    .viz .card .cap{ color:var(--muted); font-size:12px; margin:0 0 16px; }
+    .viz .tiles{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:0 0 18px; }
+    .viz .tile{ background:var(--surface-1); border:1px solid var(--ring); border-radius:12px; padding:14px 16px; }
+    .viz .tile .n{ font-size:28px; font-weight:750; letter-spacing:-.02em; }
+    .viz .tile .l{ font-size:12px; color:var(--ink-2); margin-top:2px; }
+    .viz .tile .l b{ color:var(--ink); font-weight:600; }
+    .viz .dot{ display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:middle; }
+    /* stacked bars */
+    .viz .rows{ display:flex; flex-direction:column; gap:9px; }
+    .viz .row{ display:grid; grid-template-columns:132px 1fr 34px; align-items:center; gap:10px; }
+    .viz .rlabel{ font-size:12px; color:var(--ink-2); text-align:right; }
+    .viz .bar{ display:flex; height:22px; gap:2px; }
+    .viz .seg{ height:100%; display:flex; align-items:center; justify-content:center;
+      font-size:10.5px; font-weight:650; color:#fff; min-width:3px;
+      font-variant-numeric:tabular-nums; }
+    .viz .seg:first-child{ border-radius:5px 0 0 5px; } .viz .seg:last-child{ border-radius:0 5px 5px 0; }
+    .viz .seg.only{ border-radius:5px; }
+    .viz .rtot{ font-size:12px; font-weight:650; color:var(--ink); font-variant-numeric:tabular-nums; }
+    .viz .legend{ display:flex; flex-wrap:wrap; gap:14px; margin-top:16px; font-size:12px; color:var(--ink-2); }
+    .viz .legend span{ display:inline-flex; align-items:center; gap:6px; }
+    /* matrix */
+    .viz .mwrap{ overflow-x:auto; }
+    .viz table.m{ border-collapse:separate; border-spacing:0; width:100%; min-width:460px; }
+    .viz table.m th{ font-size:11px; color:var(--muted); font-weight:600; padding:6px 8px; text-align:center; }
+    .viz table.m th.rh{ text-align:right; width:78px; white-space:nowrap; }
+    .viz table.m td{ border:1px solid var(--grid); height:62px; vertical-align:middle; padding:5px;
+      background:var(--surface-1); }
+    .viz td.win{ background:color-mix(in srgb,var(--accent) 8%,var(--surface-1)); }
+    .viz .cellchips{ display:flex; flex-wrap:wrap; gap:5px; justify-content:center; }
+    .viz .chip{ width:26px; height:26px; border-radius:50%; color:#fff; font-size:12px; font-weight:700;
+      display:flex; align-items:center; justify-content:center; cursor:default; }
+    .viz .effscale{ font-size:11px; color:var(--muted); text-align:center; margin-top:6px; }
+    .viz .quad{ font-size:11.5px; color:var(--ink-2); margin-top:12px; display:flex; gap:16px; flex-wrap:wrap; }
+    .viz .quad b{ color:var(--ink); }
+    .viz .foot{ font-size:11.5px; color:var(--muted); margin-top:4px; }
+    .viz .foot code{ font-family:ui-monospace,Menlo,monospace; color:var(--ink-2); }
+  </style>
+
+  <h1>Chess · Phase 4 Gap Analysis</h1>
+  <p class="sub">From an 8-dimension code audit — ~96 findings (themes overlap), deduplicated to 12 top risks. Severity is an ordinal scale; every value is labeled.</p>
+
+  <div class="tiles">
+    <div class="tile"><div class="n">96</div><div class="l">raw findings across <b>8</b> dimensions</div></div>
+    <div class="tile"><div class="n" style="color:var(--sev-crit)">1</div><div class="l"><b>Critical</b> — AI is material-only</div></div>
+    <div class="tile"><div class="n" style="color:var(--sev-high)">23</div><div class="l"><b>High</b> severity findings</div></div>
+    <div class="tile"><div class="n" style="color:var(--accent)">3</div><div class="l"><b>Quick wins</b> — high sev · S effort (#5 CI, #6 agent-reload, #12 promo-SAN)</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Findings by area &amp; severity</h2>
+    <p class="cap">Where the concerns concentrate. Bar length = finding count. Testing, persistence and the frontend carry the most weight — the engine core is nearly clean.</p>
+    <div class="rows" id="rows"></div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--sev-crit)"></i>Critical</span>
+      <span><i class="dot" style="background:var(--sev-high)"></i>High</span>
+      <span><i class="dot" style="background:var(--sev-med)"></i>Medium</span>
+      <span><i class="dot" style="background:var(--sev-low)"></i>Low</span>
+      <span style="color:var(--muted)">· concurrency also had 3 patterns verified <b>correct</b> (not counted)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Top 12 risks — severity × effort</h2>
+    <p class="cap">The prioritization matrix. Up = worse, left = cheaper. The shaded column band is the <b>do-first</b> zone: high impact for low/medium effort.</p>
+    <div class="mwrap">
+      <table class="m" id="matrix"></table>
+    </div>
+    <div class="effscale">effort → cheaper on the left</div>
+    <div class="quad">
+      <span><b>Quick wins</b> (S): #5 CI gate · #6 agent-reload · #12 promotion SAN</span>
+      <span><b>High-value (M):</b> #1 DoS guards · #2 async persistence · #3 SSE · #4 clocks · #10 FEN · #11 tokens</span>
+      <span><b>Big bets (L/XL):</b> #7 archive · #9 AI eval · #8 multi-node (Phase 5)</span>
+    </div>
+    <p class="foot">Risk keys map to <code>docs/PHASE4-PLAN.md</code> §0. #8 (multi-node, XL) is deferred to Phase&nbsp;5.</p>
+  </div>
+
+  <script>
+    (function(){
+      const SEV = ['crit','high','med','low'];
+      const SEVVAR = { crit:'--sev-crit', high:'--sev-high', med:'--sev-med', low:'--sev-low' };
+      // raw finding counts per dimension {crit,high,med,low}
+      const data = [
+        ['Persistence / data',   {crit:0,high:4,med:7,low:3}],
+        ['Testing',              {crit:0,high:6,med:5,low:2}],
+        ['Frontend / real-time', {crit:0,high:3,med:7,low:3}],
+        ['Scalability / ops',    {crit:0,high:4,med:6,low:3}],
+        ['AI quality',           {crit:1,high:3,med:6,low:2}],
+        ['Security / abuse',     {crit:0,high:2,med:5,low:4}],
+        ['Engine correctness',   {crit:0,high:0,med:6,low:5}],
+        ['Concurrency / races',  {crit:0,high:1,med:4,low:4}],
+      ];
+      const PXPER = 15; // px per finding
+      const rows = document.getElementById('rows');
+      data.forEach(([name,c])=>{
+        const total = c.crit+c.high+c.med+c.low;
+        const row = document.createElement('div'); row.className='row';
+        const segs = SEV.filter(s=>c[s]>0).map((s,i,arr)=>{
+          const w = c[s]*PXPER;
+          const only = arr.length===1 ? ' only':'';
+          return `<div class="seg${only}" title="${name}: ${c[s]} ${s}" style="width:${w}px;background:var(${SEVVAR[s]})">${c[s]>=2?c[s]:''}</div>`;
+        }).join('');
+        row.innerHTML = `<div class="rlabel">${name}</div><div class="bar">${segs}</div><div class="rtot">${total}</div>`;
+        rows.appendChild(row);
+      });
+
+      // matrix: rows = severity (crit..low), cols = effort S,M,L,XL
+      const EFF = ['S','M','L','XL'];
+      const risks = {
+        1:{sev:'high',eff:'M',t:'Unauthenticated, unbounded endpoints → DoS'},
+        2:{sev:'high',eff:'M',t:'Sync DB upsert held inside g.mu'},
+        3:{sev:'high',eff:'M',t:'SSE: no reconnect / heartbeat / drops terminal event'},
+        4:{sev:'high',eff:'M',t:'Clock integrity: turn-start snapshot; reload refunds time'},
+        5:{sev:'high',eff:'S',t:'CI never runs tests / vet / -race'},
+        6:{sev:'high',eff:'S',t:'Reloaded agent games never resume'},
+        7:{sev:'high',eff:'L',t:'Finished games deleted — no history archive'},
+        8:{sev:'high',eff:'XL',t:'Single-node: in-memory map + in-process SSE'},
+        9:{sev:'crit',eff:'L',t:'AI evaluation is material-only'},
+        10:{sev:'med',eff:'M',t:'FEN import accepts illegal positions'},
+        11:{sev:'med',eff:'M',t:'Seat tokens plaintext (DB + localStorage)'},
+        12:{sev:'med',eff:'S',t:'Promotion SAN loses =Q'},
+      };
+      const cell = {}; // sev|eff -> [ids]
+      Object.entries(risks).forEach(([id,r])=>{ const k=r.sev+'|'+r.eff; (cell[k]=cell[k]||[]).push(id); });
+      const mrows = ['crit','high','med','low'];
+      const label = { crit:'Critical', high:'High', med:'Medium', low:'Low' };
+      let html = '<tr><th class="rh"></th>'+EFF.map(e=>`<th>${e}</th>`).join('')+'</tr>';
+      mrows.forEach(sv=>{
+        html += `<tr><th class="rh" style="color:var(${SEVVAR[sv]})">${label[sv]}</th>`;
+        EFF.forEach(e=>{
+          const ids = cell[sv+'|'+e]||[];
+          const win = (sv==='crit'||sv==='high') && (e==='S'||e==='M') ? ' class="win"' : '';
+          const chips = ids.map(id=>`<div class="chip" title="#${id} · ${risks[id].t}" style="background:var(${SEVVAR[sv]})">${id}</div>`).join('');
+          html += `<td${win}><div class="cellchips">${chips}</div></td>`;
+        });
+        html += '</tr>';
+      });
+      document.getElementById('matrix').innerHTML = html;
+    })();
+  </script>
+</div>
+</body>
+</html>
