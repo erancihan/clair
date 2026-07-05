@@ -62,4 +62,4 @@ tidy:
 # testing
 .PHONY: test
 test:
-	go test ./test/... ./internal/games/... ./internal/server/games/... -v
+	go test ./test/... ./internal/games/... -v

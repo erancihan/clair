@@ -24,10 +24,7 @@ type backend struct {
 }
 
 func NewBackEnd(ctx context.Context, logger *zap.Logger, valkey valkey.Client, pool *gorm.DB) *backend {
-	// NOTE: chess SQLite persistence (games.InitChessPersistence) is intentionally
-	// NOT activated — chess games are in-memory only, so no DB writes occur. The
-	// store code is left dormant pending an owner decision on removal vs redesign.
-	// Do not re-enable without sign-off.
+	// Start the background janitor that evicts finished/abandoned in-memory games.
 	games.StartChessCleanup(ctx)
 
 	return &backend{
