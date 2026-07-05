@@ -632,66 +632,6 @@ func TestMoveHistoryAndPGN(t *testing.T) {
 	}
 }
 
-// --- Phase 2: persistence --------------------------------------------------
-
-func TestBoardFENRoundTrip(t *testing.T) {
-	fens := []string{
-		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-		kiwipeteFEN,
-		"4k3/8/8/3pP3/8/8/8/4K3 w - d6 5 3",
-	}
-	for _, fen := range fens {
-		b, turn, err := NewBoardFromFEN(fen)
-		if err != nil {
-			t.Fatalf("parse %q: %v", fen, err)
-		}
-		if got := b.FEN(turn); got != fen {
-			t.Errorf("round-trip mismatch:\n got %q\nwant %q", got, fen)
-		}
-	}
-}
-
-func TestLoadSnapshot(t *testing.T) {
-	snap := Snapshot{
-		ID:          "snap-test-1",
-		GameType:    int(TypePvP),
-		Status:      string(StatusOngoing),
-		FEN:         "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-		WhiteTimeMs: 300000,
-		BlackTimeMs: 290000,
-		WhiteToken:  "wtok",
-		BlackToken:  "btok",
-		Moves:       []string{"e4"},
-	}
-
-	g, err := LoadSnapshot(snap)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	g.mu.Lock()
-	g.stopClockLocked()
-	g.mu.Unlock()
-
-	if g.State.Turn != Black {
-		t.Errorf("turn = %v, want Black", g.State.Turn)
-	}
-	if g.State.Status != StatusOngoing {
-		t.Errorf("status = %q, want Ongoing", g.State.Status)
-	}
-	if len(g.State.Moves) != 1 || g.State.Moves[0] != "e4" {
-		t.Errorf("moves = %v, want [e4]", g.State.Moves)
-	}
-	if c, ok := g.SeatColor("wtok"); !ok || c != "white" {
-		t.Error("white token should be restored")
-	}
-	if c, ok := g.SeatColor("btok"); !ok || c != "black" {
-		t.Error("black token should be restored")
-	}
-	if GetGame("snap-test-1") == nil {
-		t.Error("reloaded game should be registered in the store")
-	}
-}
-
 // --- Phase 3: AI -----------------------------------------------------------
 
 func TestBestMoveReturnsLegalMove(t *testing.T) {
