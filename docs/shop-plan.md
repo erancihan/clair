@@ -14,8 +14,9 @@ Target branch: `claude/optimistic-rubin-wpbnbm`
 
 Everything below is written to match the existing idioms in this repo:
 `templ` views + `web.Base()` shell, the custom `router.Router` (`Group` / `Middleware`),
-the `GameService`-style handler factories (`func(ctx) http.HandlerFunc`), GORM models in
-`internal/database/models`, and Valkey via `ctx.ValKey`.
+the `GameService`-style handler factories (`func(ctx) http.HandlerFunc`), GORM models (the shared
+`User` in `internal/database/models`; shop models prefixed `Shop*` in their own
+`internal/shop/models`, §2.1), and Valkey via `ctx.ValKey`.
 
 ---
 
@@ -26,9 +27,10 @@ New/changed packages (mirrors the `games` split of domain vs. HTTP):
 ```
 internal/
 ├── database/models/
-│   └── shop.go              # NEW: Category, Product, ProductImage, Order, OrderItem
-│   └── users.go             # CHANGE: add Role field for admin gating
+│   └── users.go             # CHANGE: add Role field for admin gating (shared, bare `users`)
 ├── shop/                    # NEW: domain layer (pure logic, no net/http)
+│   ├── models/              # NEW: Shop* models, package `models`, aliased `sm` (tables shop_*)
+│   │   └── shop.go          #   ShopCategory, ShopProduct, ShopProductImage, ShopOrder, ShopOrderItem
 │   ├── catalog.go           #   product/category queries & CRUD
 │   ├── cart.go              #   Cart type + CartStore interface
 │   ├── cart_valkey.go       #   Valkey-backed CartStore
@@ -61,42 +63,47 @@ This is the same separation you already have between `internal/games/*` and
 ### 2.1 Coexistence & name-collision audit (booking domain)
 
 A sibling design — `docs/booking-system-design.md` (branch `docs/booking-system-design`) — adds a
-booking/ticketing system to the same module. It was **explicitly authored to coexist with this
-shopfront**: every booking type is prefixed `Booking*` (GORM → tables `booking_*`), and its
-"Naming & database isolation" section **pre-reserves the bare table names for the shop**.
+booking/ticketing system to the **same single Postgres database**. It was **explicitly authored to
+coexist with this shopfront**: every booking type is prefixed `Booking*` (GORM → tables `booking_*`).
 
-**Verdict: no hard collisions.** Confirmed on both axes:
+**Decision (this plan): the shop mirrors that convention.** Every shop model is prefixed `Shop*`
+(GORM → tables `shop_*`) and lives in its own `internal/shop/models` package (aliased `sm`), exactly
+paralleling booking's `bm` / `am` / `tm`. We deliberately go beyond the booking doc's assumption
+(it expected the shop to take the bare `orders` / `order_items` / `inventories` / `payments` names) —
+prefixing both domains keeps every table grep-attributable to its owner and leaves the bare generic
+names unclaimed. The booking doc picks the type-prefix approach over a scoped `NamingStrategy`
+precisely for this grep-ability; we match it so the two domains read as siblings. **No collisions on
+either axis:**
 
-- **Tables.** Shop owns `products`, `categories`, `product_images`, `orders`, `order_items`.
-  Booking owns the `booking_*` namespace (`booking_orders`, `booking_order_items`,
-  `booking_inventories`, `booking_payments`, `booking_seats`, …). No overlap. The booking doc's
-  own mapping table lists `orders` / `order_items` / `inventories` / `payments` as the
-  "shopfront equivalent (separate)" — i.e. it already handed those bare names to us.
-- **Go types.** Shop models live in `internal/database/models` (`package models`). Booking models
-  live in `internal/booking/models`, `internal/appointments/models`, `internal/ticketing/models`
-  (each `package models`, imported aliased as `bm` / `am` / `tm`). Different import paths ⇒ shop's
-  bare `Order` / `OrderItem` and booking's `BookingOrder` / `BookingOrderItem` never clash.
+- **Tables.** Shop owns the `shop_*` namespace (`shop_products`, `shop_categories`,
+  `shop_product_images`, `shop_orders`, `shop_order_items`). Booking owns `booking_*`
+  (`booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, …). Disjoint prefixes.
+- **Go types.** Shop models live in `internal/shop/models` (`package models`, alias `sm`); booking
+  models in `internal/{booking,appointments,ticketing}/models` (aliased `bm` / `am` / `tm`). Shop's
+  `sm.ShopOrder` / `sm.ShopOrderItem` and booking's `bm.BookingOrder` / `bm.BookingOrderItem` are
+  distinct identifiers in distinct import paths. The only shared model is `User`.
 
 **Authoritative table-namespace split:**
 
 | Domain | Models package | Table prefix | Example tables |
 |---|---|---|---|
-| Shop (this plan) | `internal/database/models` | *(bare)* | `products`, `categories`, `product_images`, `orders`, `order_items` |
+| Shop (this plan) | `internal/shop/models` (alias `sm`) | `shop_` | `shop_products`, `shop_categories`, `shop_product_images`, `shop_orders`, `shop_order_items` |
 | Booking kernel / appointments / ticketing | `internal/{booking,appointments,ticketing}/models` | `booking_` | `booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, … |
 | Shared | `internal/database/models` | *(bare)* | `users` |
 
-**Coordination points (the real risks — not collisions, but shared surfaces):**
+**Coordination points (shared surfaces to align with the booking work):**
 
-1. **One database, one driver.** The booking design mandates **PostgreSQL** (`newPostgresConn`,
-   `FOR UPDATE`, partial-unique indexes, `ALTER TABLE … ADD CONSTRAINT CHECK`). This plan currently
-   rides the repo's default **SQLite** path. If both ship in one deployment they share a single
-   `*gorm.DB`, so **the shop must migrate onto Postgres too.** The shop models here use only
-   portable GORM tags (no SQLite-only features), so this is a config change, not a schema rewrite.
-   Keep the in-memory-SQLite test harness (§10.1) for fast shop-only tests; cross-domain
-   integration tests would run on Postgres (booking uses testcontainers/dockertest). See §12.
+1. **One database, one driver — PostgreSQL (decided).** The shop and booking share a single
+   `*gorm.DB` on Postgres, so `internal/database/database.go` must complete `newPostgresConn`
+   (`gorm.io/driver/postgres`, `DATABASE_URL`) and the shop no longer rides the SQLite default in
+   production. The shop models use only portable GORM tags and the `Shop*` type-prefix derives
+   `shop_*` identically on any driver, so this is a config change, not a schema rewrite. Testing:
+   in-memory SQLite stays valid for fast shop-only unit/endpoint tests (no Postgres-only features
+   used), but the shared/cross-domain integration suite runs on Postgres (booking uses
+   testcontainers/dockertest); see §10.1.
 2. **Unified `AutoMigrate`.** Both plans append to the registration list in
-   `internal/database/database.go`. There must be **one merged list** (`User` + shop models +
-   `bm.*`/`am.*`/`tm.*`); register `User` exactly once.
+   `internal/database/database.go`. There must be **one merged list** (`User` + `sm.*` shop models +
+   `bm.*`/`am.*`/`tm.*` booking models); register `User` exactly once.
 3. **`User` is a shared, mutated model.** This plan adds `User.Role` (§7) for `/shop/admin`; booking
    also has admin surfaces. Add `Role` **once**, agree on values covering both domains, and share
    **one** `AdminMiddleware` — don't build two role systems.
@@ -104,34 +111,40 @@ shopfront**: every booking type is prefixed `Booking*` (GORM → tables `booking
    `/events/*`, `/admin/*`, `/webhooks/*`. This is exactly why we picked `/shop/admin` over
    `/admin/shop` — it keeps the shop out of booking's top-level `/admin` group. Keep it that way.
 5. **Forward-looking (shop's §11 "later" features).** When the shop adds real payments or stock
-   reservations, claim the **bare** names booking reserved for us — `payments`, `inventories` — and
-   never reuse `booking_*`. Note that shop "inventory" (product stock) is a *different concept* from
-   `BookingInventory` (a seat/slot capacity pool); today the shop sidesteps it entirely with a plain
-   `Product.StockQty` column. If shop and booking payments ever need shared logic, extract a
-   provider interface — don't share a table.
+   reservations, keep them inside the `shop_*` namespace (`ShopPayment` → `shop_payments`,
+   `ShopInventory` → `shop_inventories`) and never reuse `booking_*`. Note that shop "inventory"
+   (product stock) is a *different concept* from `BookingInventory` (a seat/slot capacity pool);
+   today the shop sidesteps it entirely with a plain `ShopProduct.StockQty` column. If shop and
+   booking payments ever need shared logic, extract a provider interface — don't share a table.
 
 ### 2.2 Models
 
-`internal/database/models/shop.go`. Money is stored as **int64 minor units** (cents) plus a
-currency code — never floats. Order line items snapshot title/price so historical orders don't
-change when a product is later edited.
+`internal/shop/models/shop.go` — `package models`, imported everywhere else in the shop as `sm`.
+Every type carries the `Shop` prefix so GORM derives `shop_*` table names (§2.1). Money is stored as
+**int64 minor units** (cents) plus a currency code — never floats. Order line items snapshot
+title/price so historical orders don't change when a product is later edited.
+
+> **Why the `foreignKey:` tags.** The `Shop*` type prefix breaks GORM's default FK inference — for
+> `[]ShopProductImage` it would look for a `ShopProductID` column. The explicit `foreignKey:` tags
+> keep columns short (`product_id`, `category_id`, `order_id`), the same technique the booking
+> models use (`foreignKey:SlotID`).
 
 ```go
-package models
+package models // import path: github.com/erancihan/clair/internal/shop/models (aliased sm)
 
 import "gorm.io/gorm"
 
 // ----- Catalog -----
 
-type ProductStatus string
+type ShopProductStatus string
 
 const (
-	ProductDraft     ProductStatus = "draft"
-	ProductPublished ProductStatus = "published"
-	ProductArchived  ProductStatus = "archived"
+	ShopProductDraft     ShopProductStatus = "draft"
+	ShopProductPublished ShopProductStatus = "published"
+	ShopProductArchived  ShopProductStatus = "archived"
 )
 
-type Category struct {
+type ShopCategory struct {
 	gorm.Model
 	Slug        string `json:"slug"        gorm:"uniqueIndex;not null"`
 	Name        string `json:"name"        gorm:"not null"`
@@ -140,26 +153,26 @@ type Category struct {
 	Position    int    `json:"position"    gorm:"default:0"`
 }
 
-type Product struct {
+type ShopProduct struct {
 	gorm.Model
-	Slug        string        `json:"slug"        gorm:"uniqueIndex;not null"`
-	Title       string        `json:"title"       gorm:"not null"`
-	Description string        `json:"description"`
-	Status      ProductStatus `json:"status"      gorm:"index;default:draft"`
-	PriceCents  int64         `json:"price_cents" gorm:"not null"` // minor units
-	Currency    string        `json:"currency"    gorm:"default:USD"`
-	SKU         string        `json:"sku"         gorm:"index"`
-	StockQty    int           `json:"stock_qty"   gorm:"default:0"`
-	Featured    bool          `json:"featured"    gorm:"index;default:false"`
+	Slug        string            `json:"slug"        gorm:"uniqueIndex;not null"`
+	Title       string            `json:"title"       gorm:"not null"`
+	Description string            `json:"description"`
+	Status      ShopProductStatus `json:"status"      gorm:"index;default:draft"`
+	PriceCents  int64             `json:"price_cents" gorm:"not null"` // minor units
+	Currency    string            `json:"currency"    gorm:"default:USD"`
+	SKU         string            `json:"sku"         gorm:"index"`
+	StockQty    int               `json:"stock_qty"   gorm:"default:0"`
+	Featured    bool              `json:"featured"    gorm:"index;default:false"`
 
-	CategoryID *uint          `json:"category_id" gorm:"index"`
-	Category   *Category      `json:"category,omitempty"`
-	Images     []ProductImage `json:"images,omitempty"`
+	CategoryID *uint              `json:"category_id" gorm:"index"`
+	Category   *ShopCategory      `json:"category,omitempty" gorm:"foreignKey:CategoryID"`
+	Images     []ShopProductImage `json:"images,omitempty"   gorm:"foreignKey:ProductID"`
 }
 
-type ProductImage struct {
+type ShopProductImage struct {
 	gorm.Model
-	ProductID uint   `json:"product_id" gorm:"index;not null"`
+	ProductID uint   `json:"product_id" gorm:"index;not null"` // -> shop_products.id
 	URL       string `json:"url"        gorm:"not null"`
 	Alt       string `json:"alt"`
 	Position  int    `json:"position"   gorm:"default:0"`
@@ -167,22 +180,22 @@ type ProductImage struct {
 
 // ----- Orders -----
 
-type OrderStatus string
+type ShopOrderStatus string
 
 const (
-	OrderPendingPayment OrderStatus = "pending_payment"
-	OrderPaid           OrderStatus = "paid"
-	OrderFulfilled      OrderStatus = "fulfilled"
-	OrderCancelled      OrderStatus = "cancelled"
+	ShopOrderPendingPayment ShopOrderStatus = "pending_payment"
+	ShopOrderPaid           ShopOrderStatus = "paid"
+	ShopOrderFulfilled      ShopOrderStatus = "fulfilled"
+	ShopOrderCancelled      ShopOrderStatus = "cancelled"
 )
 
-type Order struct {
+type ShopOrder struct {
 	gorm.Model
-	Number   string      `json:"number" gorm:"uniqueIndex"` // human-friendly, e.g. CLR-2K7QF3
-	UserID   *uint       `json:"user_id" gorm:"index"`      // nullable => guest checkout
-	Email    string      `json:"email"   gorm:"index"`
-	Status   OrderStatus `json:"status"  gorm:"index;default:pending_payment"`
-	Currency string      `json:"currency"`
+	Number   string          `json:"number" gorm:"uniqueIndex"` // human-friendly, e.g. CLR-2K7QF3
+	UserID   *uint           `json:"user_id" gorm:"index"`      // nullable => guest checkout; -> users.id
+	Email    string          `json:"email"   gorm:"index"`
+	Status   ShopOrderStatus `json:"status"  gorm:"index;default:pending_payment"`
+	Currency string          `json:"currency"`
 
 	SubtotalCents int64 `json:"subtotal_cents"`
 	ShippingCents int64 `json:"shipping_cents"`
@@ -195,14 +208,14 @@ type Order struct {
 	ShipPostal  string `json:"ship_postal"`
 	ShipCountry string `json:"ship_country"`
 
-	Items []OrderItem `json:"items,omitempty"`
+	Items []ShopOrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
 }
 
-type OrderItem struct {
+type ShopOrderItem struct {
 	gorm.Model
-	OrderID   uint   `json:"order_id"  gorm:"index;not null"`
-	ProductID uint   `json:"product_id" gorm:"index"`
-	// immutable snapshot — do NOT join back to Product for display
+	OrderID   uint   `json:"order_id"  gorm:"index;not null"` // -> shop_orders.id
+	ProductID uint   `json:"product_id" gorm:"index"`         // -> shop_products.id (may be soft-deleted later)
+	// immutable snapshot — do NOT join back to ShopProduct for display
 	Title     string `json:"title"`
 	SKU       string `json:"sku"`
 	UnitCents int64  `json:"unit_cents"`
@@ -211,17 +224,24 @@ type OrderItem struct {
 }
 ```
 
-Register the new models in `internal/database/database.go` `newSQLiteConn` next to the existing
-`db.AutoMigrate(&models.User{})`:
+Register the shop models on the **shared Postgres connection** (`newPostgresConn`, §2.1) inside the
+one merged `AutoMigrate` list — alongside the shared `User` and the booking models:
 
 ```go
+import (
+	"github.com/erancihan/clair/internal/database/models"      // shared: User
+	sm "github.com/erancihan/clair/internal/shop/models"       // shop: Shop* -> shop_*
+	// bm/am/tm "…/internal/{booking,appointments,ticketing}/models" // booking work
+)
+
 db.AutoMigrate(
-	&models.User{},
-	&models.Category{},
-	&models.Product{},
-	&models.ProductImage{},
-	&models.Order{},
-	&models.OrderItem{},
+	&models.User{},          // shared, registered once
+	&sm.ShopCategory{},
+	&sm.ShopProduct{},
+	&sm.ShopProductImage{},
+	&sm.ShopOrder{},
+	&sm.ShopOrderItem{},
+	// … booking models registered by the booking work (bm.*, am.*, tm.*)
 )
 ```
 
@@ -261,7 +281,7 @@ package shop
 import (
 	"context"
 
-	"github.com/erancihan/clair/internal/database/models"
+	sm "github.com/erancihan/clair/internal/shop/models"
 	"gorm.io/gorm"
 )
 
@@ -280,7 +300,7 @@ func (c *Catalog) tx(ctx context.Context) *gorm.DB {
 }
 
 // ListPublished powers /shop/products with basic filter + pagination.
-func (c *Catalog) ListPublished(ctx context.Context, p ListParams) ([]models.Product, int64, error) {
+func (c *Catalog) ListPublished(ctx context.Context, p ListParams) ([]sm.ShopProduct, int64, error) {
 	if p.PerPage <= 0 {
 		p.PerPage = 12
 	}
@@ -288,7 +308,7 @@ func (c *Catalog) ListPublished(ctx context.Context, p ListParams) ([]models.Pro
 		p.Page = 1
 	}
 
-	q := c.tx(ctx).Model(&models.Product{}).Where("status = ?", models.ProductPublished)
+	q := c.tx(ctx).Model(&sm.ShopProduct{}).Where("status = ?", sm.ShopProductPublished)
 	if p.Search != "" {
 		q = q.Where("title LIKE ?", "%"+p.Search+"%")
 	}
@@ -300,17 +320,17 @@ func (c *Catalog) ListPublished(ctx context.Context, p ListParams) ([]models.Pro
 	var total int64
 	q.Count(&total)
 
-	var products []models.Product
+	var products []sm.ShopProduct
 	err := q.Preload("Images").
 		Offset((p.Page - 1) * p.PerPage).Limit(p.PerPage).
 		Order("created_at DESC").Find(&products).Error
 	return products, total, err
 }
 
-func (c *Catalog) BySlug(ctx context.Context, slug string) (*models.Product, error) {
-	var p models.Product
+func (c *Catalog) BySlug(ctx context.Context, slug string) (*sm.ShopProduct, error) {
+	var p sm.ShopProduct
 	err := c.tx(ctx).Preload("Images").Preload("Category").
-		Where("slug = ? AND status = ?", slug, models.ProductPublished).
+		Where("slug = ? AND status = ?", slug, sm.ShopProductPublished).
 		First(&p).Error
 	if err != nil {
 		return nil, err
@@ -319,15 +339,15 @@ func (c *Catalog) BySlug(ctx context.Context, slug string) (*models.Product, err
 }
 
 // Admin CRUD (unfiltered by status)
-func (c *Catalog) AdminList(ctx context.Context) ([]models.Product, error) {
-	var ps []models.Product
+func (c *Catalog) AdminList(ctx context.Context) ([]sm.ShopProduct, error) {
+	var ps []sm.ShopProduct
 	err := c.tx(ctx).Preload("Images").Order("updated_at DESC").Find(&ps).Error
 	return ps, err
 }
-func (c *Catalog) Create(ctx context.Context, p *models.Product) error { return c.tx(ctx).Create(p).Error }
-func (c *Catalog) Update(ctx context.Context, p *models.Product) error { return c.tx(ctx).Save(p).Error }
+func (c *Catalog) Create(ctx context.Context, p *sm.ShopProduct) error { return c.tx(ctx).Create(p).Error }
+func (c *Catalog) Update(ctx context.Context, p *sm.ShopProduct) error { return c.tx(ctx).Save(p).Error }
 func (c *Catalog) Delete(ctx context.Context, id uint) error {
-	return c.tx(ctx).Delete(&models.Product{}, id).Error
+	return c.tx(ctx).Delete(&sm.ShopProduct{}, id).Error
 }
 ```
 
@@ -454,7 +474,7 @@ func NewCartStore(v valkey.Client, db *gorm.DB) CartStore {
 
 ### 3.4 Checkout (`checkout.go`)
 
-Converts a cart into an `Order` in a transaction, snapshotting each line and (optionally)
+Converts a cart into a `ShopOrder` in a transaction, snapshotting each line and (optionally)
 decrementing stock. This is the seam where a real `PaymentProvider` plugs in.
 
 ```go
@@ -463,7 +483,7 @@ package shop
 import (
 	"context"
 
-	"github.com/erancihan/clair/internal/database/models"
+	sm "github.com/erancihan/clair/internal/shop/models"
 	"gorm.io/gorm"
 )
 
@@ -471,13 +491,13 @@ type ShippingDetails struct {
 	Email, Name, Address, City, Postal, Country string
 }
 
-func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails, orderNumber string) (*models.Order, error) {
+func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails, orderNumber string) (*sm.ShopOrder, error) {
 	if len(cart.Items) == 0 {
 		return nil, ErrEmptyCart
 	}
 
-	order := &models.Order{
-		Number: orderNumber, Email: s.Email, Status: models.OrderPendingPayment,
+	order := &sm.ShopOrder{
+		Number: orderNumber, Email: s.Email, Status: sm.ShopOrderPendingPayment,
 		Currency: cart.Currency,
 		ShipName: s.Name, ShipAddress: s.Address, ShipCity: s.City,
 		ShipPostal: s.Postal, ShipCountry: s.Country,
@@ -485,7 +505,7 @@ func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails,
 	for _, it := range cart.Items {
 		line := it.UnitCents * int64(it.Quantity)
 		order.SubtotalCents += line
-		order.Items = append(order.Items, models.OrderItem{
+		order.Items = append(order.Items, sm.ShopOrderItem{
 			ProductID: it.ProductID, Title: it.Title, UnitCents: it.UnitCents,
 			Quantity: it.Quantity, LineCents: line,
 		})
@@ -498,7 +518,7 @@ func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails,
 		}
 		// optional: decrement stock atomically, guard against oversell
 		for _, it := range cart.Items {
-			res := tx.Model(&models.Product{}).
+			res := tx.Model(&sm.ShopProduct{}).
 				Where("id = ? AND stock_qty >= ?", it.ProductID, it.Quantity).
 				UpdateColumn("stock_qty", gorm.Expr("stock_qty - ?", it.Quantity))
 			if res.RowsAffected == 0 {
@@ -679,11 +699,11 @@ Product grid + card:
 package shopviews
 
 import (
-	"github.com/erancihan/clair/internal/database/models"
+	sm "github.com/erancihan/clair/internal/shop/models"
 	"github.com/erancihan/clair/internal/shop"
 )
 
-templ ProductList(products []models.Product) {
+templ ProductList(products []sm.ShopProduct) {
 	<div class="mt-16 sm:px-8">
 		<div class="mx-auto max-w-7xl lg:px-8">
 			<div class="relative px-4 sm:px-8 lg:px-12">
@@ -702,7 +722,7 @@ templ ProductList(products []models.Product) {
 	</div>
 }
 
-templ ProductCard(p models.Product) {
+templ ProductCard(p sm.ShopProduct) {
 	<a href={ templ.SafeURL("/shop/products/" + p.Slug) } class="group block">
 		<div class="aspect-square w-full overflow-hidden rounded-2xl bg-zinc-100 dark:bg-zinc-800">
 			if len(p.Images) > 0 {
@@ -722,7 +742,7 @@ Product detail with an add-to-cart form (plain POST form — no JS required, pro
 enhancement via Alpine optional):
 
 ```templ
-templ ProductDetail(p *models.Product) {
+templ ProductDetail(p *sm.ShopProduct) {
 	<div class="mx-auto max-w-2xl px-4 py-16 sm:px-6 lg:max-w-5xl lg:px-8">
 		<div class="grid grid-cols-1 gap-x-8 gap-y-10 lg:grid-cols-2">
 			<div class="aspect-square overflow-hidden rounded-3xl bg-zinc-100 dark:bg-zinc-800">
@@ -771,13 +791,13 @@ func (s *Service) AdminProductCreate(ctx server_context.BackEndContext) http.Han
 	return func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		price, _ := strconv.ParseFloat(r.FormValue("price"), 64)
-		p := &models.Product{
+		p := &sm.ShopProduct{
 			Title:       r.FormValue("title"),
 			Slug:        shop.Slugify(r.FormValue("title")),
 			Description: r.FormValue("description"),
 			PriceCents:  int64(price * 100), // form shows dollars, DB stores cents
 			Currency:    "USD",
-			Status:      models.ProductStatus(r.FormValue("status")),
+			Status:      sm.ShopProductStatus(r.FormValue("status")),
 			SKU:         r.FormValue("sku"),
 		}
 		if err := s.Catalog.Create(r.Context(), p); err != nil {
@@ -790,7 +810,7 @@ func (s *Service) AdminProductCreate(ctx server_context.BackEndContext) http.Han
 ```
 
 ```templ
-templ ProductForm(p *models.Product, action string) {
+templ ProductForm(p *sm.ShopProduct, action string) {
 	<form action={ templ.SafeURL(action) } method="POST" enctype="multipart/form-data"
 		class="mx-auto max-w-2xl space-y-6 px-4 py-10">
 		<div>
@@ -806,8 +826,8 @@ templ ProductForm(p *models.Product, action string) {
 		<div>
 			<label class="block text-sm font-medium">Status</label>
 			<select name="status" class="mt-1 block w-full rounded-md border px-3 py-2">
-				<option value="draft"     selected?={ p.Status == models.ProductDraft }>Draft</option>
-				<option value="published" selected?={ p.Status == models.ProductPublished }>Published</option>
+				<option value="draft"     selected?={ p.Status == sm.ShopProductDraft }>Draft</option>
+				<option value="published" selected?={ p.Status == sm.ShopProductPublished }>Published</option>
 			</select>
 		</div>
 		<textarea name="description" rows="6" class="block w-full rounded-md border px-3 py-2">{ p.Description }</textarea>
@@ -920,6 +940,12 @@ Testing is **primarily endpoint (HTTP integration) testing**: each test drives t
 client (so the cart uses its DB fallback store). A handful of pure-domain unit tests back the
 money/cart math. Everything lives under `test/` and runs with `go test ./test/... -v`.
 
+> **SQLite here, Postgres in production.** Production shares one Postgres DB with the booking domain
+> (§2.1), but the shop uses only portable GORM tags and the `Shop*` type prefix derives `shop_*`
+> table names identically on any driver, so in-memory SQLite is a valid, fast backend for shop-only
+> unit/endpoint tests. Reserve a Postgres backend (testcontainers/dockertest, as the booking suite
+> uses) for cross-domain integration tests that exercise both `shop_*` and `booking_*` in one DB.
+
 ### 10.1 Test harness
 
 ```go
@@ -934,7 +960,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/database/models" // shared: User
+	sm "github.com/erancihan/clair/internal/shop/models"  // shop: Shop*
 	"github.com/erancihan/clair/internal/server"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -953,8 +980,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *gorm.DB) {
 		t.Fatalf("open db: %v", err)
 	}
 	db.AutoMigrate(
-		&models.User{}, &models.Category{}, &models.Product{},
-		&models.ProductImage{}, &models.Order{}, &models.OrderItem{},
+		&models.User{}, &sm.ShopCategory{}, &sm.ShopProduct{},
+		&sm.ShopProductImage{}, &sm.ShopOrder{}, &sm.ShopOrderItem{},
 	)
 	handler := server.NewBackEnd(context.Background(), zap.NewNop(), nil, db).Routes()
 	ts := httptest.NewServer(handler)
@@ -994,8 +1021,8 @@ Table-driven endpoint test (the pattern every table below compiles down to):
 ```go
 func TestProductDetail(t *testing.T) {
 	ts, db := newTestServer(t)
-	db.Create(&models.Product{Slug: "blue-shirt", Title: "Blue Shirt", Status: models.ProductPublished, PriceCents: 1299, Currency: "USD"})
-	db.Create(&models.Product{Slug: "secret", Title: "Secret", Status: models.ProductDraft, PriceCents: 500, Currency: "USD"})
+	db.Create(&sm.ShopProduct{Slug: "blue-shirt", Title: "Blue Shirt", Status: sm.ShopProductPublished, PriceCents: 1299, Currency: "USD"})
+	db.Create(&sm.ShopProduct{Slug: "secret", Title: "Secret", Status: sm.ShopProductDraft, PriceCents: 500, Currency: "USD"})
 
 	cases := []struct {
 		name, path string
@@ -1340,10 +1367,13 @@ per-vendor scoping and vendor admin), discounts/coupons, inventory reservations.
 ## 12. Open questions to confirm before build
 
 - Guest checkout allowed, or must a user be logged in to order? (Plan currently allows guest via
-  nullable `Order.UserID`.)
+  nullable `ShopOrder.UserID`.)
 - Which currency(ies) at launch? (Plan defaults to single-currency USD.)
 - Do you want the CMS auth to **redirect to `/login`** for browsers rather than return 403/401?
-- **DB driver if the booking domain ships alongside this** (see §2.1): booking mandates PostgreSQL,
-  the shop currently rides SQLite. Do we migrate the shop onto Postgres so both share one database,
-  or keep them on separate connections? This also decides whether `User.Role` and `AdminMiddleware`
-  are added by this plan or by whichever domain lands first.
+- **Who owns the shared `User.Role` + `AdminMiddleware` change** (see §2.1 #3): this plan adds it for
+  `/shop/admin`, but the booking domain also gates `/admin/*`. Land it once, in whichever domain
+  ships first, with role values both agree on.
+
+**Decided:** shop and booking **share one PostgreSQL database** (§2.1). The shop moves off the SQLite
+default in production; all shop tables are prefixed `shop_*` (types `Shop*`, package
+`internal/shop/models`) to sit disjoint from booking's `booking_*`.
