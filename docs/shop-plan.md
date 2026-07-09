@@ -91,10 +91,11 @@ either axis:**
 | Booking kernel / appointments / ticketing | `internal/{booking,appointments,ticketing}/models` | `booking_` | `booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, … |
 | Shared | `internal/database/models` | *(bare)* | `users` |
 
-**Ownership split (reconciled with the booking design).** The shop ships first and **owns the shared
-infrastructure**; booking owns its reservation kernel and consumes the shared pieces:
+**Ownership split (reconciled with the booking design).** The shop is the **design authority** (spec
+owner) for the shared infrastructure; booking owns its reservation kernel and consumes the shared
+pieces. "Owner" below means *spec owner*, not who types the code:
 
-| Shared piece | Owner | Where | Consumed by |
+| Shared piece | Spec owner | Where | Consumed by |
 |---|---|---|---|
 | `User.Role` + `AdminMiddleware` | **Shop** | `internal/server/authentication` (§7.1) | booking's `/admin/*` reuse it verbatim |
 | Request-context identity + `CurrentUser(ctx)` | **Shop** | `internal/server/authentication` (§7.2) | every authed handler in both domains |
@@ -103,6 +104,29 @@ infrastructure**; booking owns its reservation kernel and consumes the shared pi
 | Merged `AutoMigrate` + `ifPostgres` guard | **Shop** | `internal/database/database.go` (§2.3) | booking's Postgres-only DDL wraps in `ifPostgres` |
 | App-wide CSRF + session hardening | **Shop** | `internal/server/authentication` (§7.4–7.5) | booking's `/hold` · `/checkout` · `/cancel` |
 | Reservation kernel (`BookingInventory`/`Hold`/`Payment`, holds/TTL, capture-time commit, seats, waitlist, reaper) | **Booking** | `internal/booking` etc. | — shop does **not** build or touch these |
+
+> **Build order: BOOKING FIRST (updated).** The plan was originally written shop-first (shop *builds*
+> the shared infra in its Phase 0). That is now inverted: **booking is implemented first**, so booking
+> *builds* every shared row above during its own Phase 0, against this shop spec. Design ownership is
+> unchanged; only the typing order moved. Two consequences: (1) the shop's Phase 0 becomes **adopt &
+> verify + gap-fill** rather than build (§11); (2) because booking writes these first, it can easily
+> shape them to booking's needs and diverge from the spec — so the shop hands booking these
+> **acceptance criteria up front**:
+>
+> - **Home package.** Identity/session/CSRF helpers land in `internal/server/authentication` (so the
+>   shop can consume them without importing `booking`), **not** in `internal/booking`.
+> - **`OwnerRef` format.** Canonical is `user:<id>` / `guest:<sid>` (§7.3) — **decide this before
+>   writing booking's `BookingHold`/`BookingOrder` rows**, since whoever codes first sets the on-disk
+>   format (booking's doc currently shows a divergent `sess:abc`). See §12.
+> - **SQLite must still stand up.** Booking runs on Postgres, but the shop's fast test harness needs
+>   the app to boot on in-memory SQLite: booking's Postgres-only DDL **must** be wrapped in
+>   `ifPostgres` and the merged `AutoMigrate` must stay dialect-portable (§2.3, §10.1).
+> - **Fix the `case "sqlite"` bug** (§2.3) while completing `newPostgresConn`, not just the Postgres
+>   path — the shop's tests depend on it.
+> - **`User.Role` + `AdminMiddleware`** exist in the shared package with `RoleCustomer`/`RoleAdmin`
+>   even if booking gates admin differently; the shop reuses them verbatim.
+> - **CSRF is app-wide**, mounted so it also covers the shop's future `/shop/*` mutations, not only
+>   booking's routes.
 
 **Coordination points (shared surfaces to align with the booking work):**
 
@@ -952,10 +976,12 @@ Admin order management is a list view + detail with a status `<select>` POSTing 
 
 ## 7. Auth, identity & app-wide security (shop-owned shared infrastructure)
 
-Per the booking-reconciliation brief (§2.1), the shop **owns** the shared auth/identity/security
-primitives and the booking domain reuses them. All of the below lives in
-`internal/server/authentication` (imported as `api_auth` in `server.go`) — **not** a shop-only
-package — so `/appointments`, `/events`, and `/admin/*` can consume it without importing `shop`.
+Per the booking-reconciliation brief (§2.1), the shop is the **spec owner** of these shared
+auth/identity/security primitives; both domains reuse them. **Build order is booking-first** (§11), so
+booking implements this section during its Phase 0 and the shop verifies + gap-fills against it — the
+signatures below are the contract. All of it lives in `internal/server/authentication` (imported as
+`api_auth` in `server.go`) — **not** a shop-only package — so `/appointments`, `/events`, and
+`/admin/*` can consume it without importing `shop`.
 
 _Snippets below elide `import` blocks for brevity; each uses only stdlib + existing repo packages
 (the new files need: `identity.go` → `context`; `middleware.go` also `strings`, `net/url`;
@@ -1698,15 +1724,25 @@ Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ r
 
 ## 11. Phased milestones
 
-Because the shop ships first and owns the shared infrastructure (§2.1), **Phase 0 comes before any
-shop UI** — booking picks it up at its own Phase 0.
+**Booking is being implemented first**, so it *builds* the shared infrastructure (§2.1) during its
+Phase 0. The shop is therefore **downstream**: its Phase 0 becomes verify-and-gap-fill, not build,
+and can only begin once booking has landed the shared pieces (or the shop stubs them to develop in
+parallel).
 
-0. **Shared infrastructure (shop-owned, booking-consumed).** Complete `newPostgresConn` + fix the
-   driver-switch bug + `ifPostgres` guard + merged `AutoMigrate` scaffold (§2.3); then `User.Role` +
-   `AdminMiddleware` + request-context identity `CurrentUser` + the shared `sid`/`OwnerRef` session
-   helper (§7.1–7.3); then app-wide CSRF + session hardening (§7.4–7.5). **Exit:** app stands up on
-   both SQLite (dev/tests) and Postgres; `CurrentUser`/`OwnerRef` usable by any handler; CSRF blocks
-   a tokenless POST.
+0. **Adopt & verify the shared infrastructure (built by booking; spec-owned by shop, §2.1).** Do
+   **not** rebuild it. Instead:
+   - Confirm each shared piece matches this spec: `newPostgresConn` + the `case "sqlite"` fix +
+     `ifPostgres` guard + dialect-portable merged `AutoMigrate` (§2.3); `User.Role`
+     (`RoleCustomer`/`RoleAdmin`) + `AdminMiddleware`; request-context `CurrentUser`; the shared
+     `sid`/`OwnerRef` in the canonical `user:`/`guest:` format (§7.1–7.3); app-wide CSRF + session
+     hardening (§7.4–7.5), all under `internal/server/authentication`.
+   - **Gap-fill** anything booking didn't need: e.g. add `User.Role`/`AdminMiddleware` if booking
+     gated admin differently; extend CSRF mounting to cover `/shop/*`; add the SQLite/`ifPostgres`
+     safety if booking (Postgres-only) skipped it.
+   - **Reconcile divergences** against the acceptance criteria in §2.1 — especially the `OwnerRef`
+     on-disk format, which booking sets first.
+   **Exit:** the app stands up on both SQLite (shop dev/tests) and Postgres; `CurrentUser`/`OwnerRef`
+   are usable from a shop handler; a tokenless shop `POST` is CSRF-rejected.
 1. **Data + domain** — `sm.*` models on the merged `AutoMigrate`, `Catalog`, `Money`, `Slugify`, unit
    tests. No UI.
 2. **Storefront read path** — `/shop`, `/shop/products`, `/shop/products/{slug}`, category pages;
@@ -1728,8 +1764,16 @@ per-vendor scoping and vendor admin), discounts/coupons, `shop_inventories` stoc
 
 **Cross-domain (reconciled with booking):** shop and booking **share one PostgreSQL database**; shop
 tables are prefixed `shop_*` (types `Shop*`, package `internal/shop/models`) disjoint from
-`booking_*`; the shop **owns** the shared auth/identity/session/CSRF/DB infrastructure (§2.1, §7,
-§2.3) and booking reuses it — one `User`, one `Role`, one `AdminMiddleware`, one `CurrentUser`/`sid`.
+`booking_*`; the shop is **spec owner** of the shared auth/identity/session/CSRF/DB infrastructure
+(§2.1, §7, §2.3) and booking reuses it — one `User`, one `Role`, one `AdminMiddleware`, one
+`CurrentUser`/`sid`. **Build order: booking first** — booking builds these against the spec; the shop
+verifies + gap-fills (§11 Phase 0).
+
+> **⚠ Decide before booking codes it:** the **`OwnerRef` on-disk format**. Canonical (this plan) is
+> `user:<id>` / `guest:<sid>` (§7.3); booking's design doc shows a divergent `sess:abc`. Whoever
+> writes the `BookingHold`/`BookingOrder` rows first fixes the persisted format, so lock it **now**,
+> at the start of booking implementation. Recommendation: adopt the `user:`/`guest:` form (it encodes
+> auth state, which a bare `sess:` id does not) and update booking's examples to match.
 
 **Shop-only (locked per the reconciliation brief — each was a 🚩 in §10):**
 
