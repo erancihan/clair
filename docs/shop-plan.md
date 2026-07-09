@@ -58,6 +58,60 @@ This is the same separation you already have between `internal/games/*` and
 
 ## 2. Data model (GORM)
 
+### 2.1 Coexistence & name-collision audit (booking domain)
+
+A sibling design — `docs/booking-system-design.md` (branch `docs/booking-system-design`) — adds a
+booking/ticketing system to the same module. It was **explicitly authored to coexist with this
+shopfront**: every booking type is prefixed `Booking*` (GORM → tables `booking_*`), and its
+"Naming & database isolation" section **pre-reserves the bare table names for the shop**.
+
+**Verdict: no hard collisions.** Confirmed on both axes:
+
+- **Tables.** Shop owns `products`, `categories`, `product_images`, `orders`, `order_items`.
+  Booking owns the `booking_*` namespace (`booking_orders`, `booking_order_items`,
+  `booking_inventories`, `booking_payments`, `booking_seats`, …). No overlap. The booking doc's
+  own mapping table lists `orders` / `order_items` / `inventories` / `payments` as the
+  "shopfront equivalent (separate)" — i.e. it already handed those bare names to us.
+- **Go types.** Shop models live in `internal/database/models` (`package models`). Booking models
+  live in `internal/booking/models`, `internal/appointments/models`, `internal/ticketing/models`
+  (each `package models`, imported aliased as `bm` / `am` / `tm`). Different import paths ⇒ shop's
+  bare `Order` / `OrderItem` and booking's `BookingOrder` / `BookingOrderItem` never clash.
+
+**Authoritative table-namespace split:**
+
+| Domain | Models package | Table prefix | Example tables |
+|---|---|---|---|
+| Shop (this plan) | `internal/database/models` | *(bare)* | `products`, `categories`, `product_images`, `orders`, `order_items` |
+| Booking kernel / appointments / ticketing | `internal/{booking,appointments,ticketing}/models` | `booking_` | `booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, … |
+| Shared | `internal/database/models` | *(bare)* | `users` |
+
+**Coordination points (the real risks — not collisions, but shared surfaces):**
+
+1. **One database, one driver.** The booking design mandates **PostgreSQL** (`newPostgresConn`,
+   `FOR UPDATE`, partial-unique indexes, `ALTER TABLE … ADD CONSTRAINT CHECK`). This plan currently
+   rides the repo's default **SQLite** path. If both ship in one deployment they share a single
+   `*gorm.DB`, so **the shop must migrate onto Postgres too.** The shop models here use only
+   portable GORM tags (no SQLite-only features), so this is a config change, not a schema rewrite.
+   Keep the in-memory-SQLite test harness (§10.1) for fast shop-only tests; cross-domain
+   integration tests would run on Postgres (booking uses testcontainers/dockertest). See §12.
+2. **Unified `AutoMigrate`.** Both plans append to the registration list in
+   `internal/database/database.go`. There must be **one merged list** (`User` + shop models +
+   `bm.*`/`am.*`/`tm.*`); register `User` exactly once.
+3. **`User` is a shared, mutated model.** This plan adds `User.Role` (§7) for `/shop/admin`; booking
+   also has admin surfaces. Add `Role` **once**, agree on values covering both domains, and share
+   **one** `AdminMiddleware` — don't build two role systems.
+4. **Routes are already disjoint.** Shop: `/shop/*`, `/shop/admin/*`. Booking: `/appointments/*`,
+   `/events/*`, `/admin/*`, `/webhooks/*`. This is exactly why we picked `/shop/admin` over
+   `/admin/shop` — it keeps the shop out of booking's top-level `/admin` group. Keep it that way.
+5. **Forward-looking (shop's §11 "later" features).** When the shop adds real payments or stock
+   reservations, claim the **bare** names booking reserved for us — `payments`, `inventories` — and
+   never reuse `booking_*`. Note that shop "inventory" (product stock) is a *different concept* from
+   `BookingInventory` (a seat/slot capacity pool); today the shop sidesteps it entirely with a plain
+   `Product.StockQty` column. If shop and booking payments ever need shared logic, extract a
+   provider interface — don't share a table.
+
+### 2.2 Models
+
 `internal/database/models/shop.go`. Money is stored as **int64 minor units** (cents) plus a
 currency code — never floats. Order line items snapshot title/price so historical orders don't
 change when a product is later edited.
@@ -1289,3 +1343,7 @@ per-vendor scoping and vendor admin), discounts/coupons, inventory reservations.
   nullable `Order.UserID`.)
 - Which currency(ies) at launch? (Plan defaults to single-currency USD.)
 - Do you want the CMS auth to **redirect to `/login`** for browsers rather than return 403/401?
+- **DB driver if the booking domain ships alongside this** (see §2.1): booking mandates PostgreSQL,
+  the shop currently rides SQLite. Do we migrate the shop onto Postgres so both share one database,
+  or keep them on separate connections? This also decides whether `User.Role` and `AdminMiddleware`
+  are added by this plan or by whichever domain lands first.
