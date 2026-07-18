@@ -1,6 +1,6 @@
 #!make
-include .env
-export $(shell sed -e '/^\#/d' -e 's/=.*//' .env)
+-include .env
+export $(shell sed -e '/^\#/d' -e 's/=.*//' .env 2>/dev/null)
 export GOWORKDIR=./
 
 .PHONY: build
