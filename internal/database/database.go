@@ -2,29 +2,27 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/erancihan/clair/internal/database/models"
 	"github.com/erancihan/clair/internal/utils"
-	"go.uber.org/zap"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
 
-func newSQLiteConn(ctx context.Context) (*gorm.DB, error) {
-	dbPath := ".opt/clair.db"
-	if os.Getenv("DB_FOLDER") != "" {
-		dbPath = os.Getenv("DB_FOLDER") + "/clair.db"
-	}
-	if os.Getenv("DB_PATH") != "" {
-		dbPath = os.Getenv("DB_PATH")
+func New(ctx context.Context) (*gorm.DB, error) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return nil, fmt.Errorf("DATABASE_URL is not set")
 	}
 
 	zapLogger := utils.NewLogger("database")
 	defer func() { _ = zapLogger.Sync() }()
 
-	zapLogger.Info("Connecting to SQLite", zap.String("db_path", dbPath))
+	zapLogger.Info("Connecting to PostgreSQL")
 
 	logger := ZapToGormLogger(zapLogger)
 	logger.SetAsDefault() // configure gorm to use our logger
@@ -36,31 +34,25 @@ func newSQLiteConn(ctx context.Context) (*gorm.DB, error) {
 		Logger:      logger.LogMode(gormlogger.Info),
 	}
 
-	db, err := gorm.Open(sqlite.Open(dbPath), config)
+	db, err := gorm.Open(postgres.Open(dsn), config)
 	if err != nil {
-		zapLogger.Fatal("failed to connect database", zap.Error(err))
+		return nil, fmt.Errorf("failed to connect database: %w", err)
 	}
 
-	zapLogger.Info("Connected to SQLite database")
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to access database handle: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(20)
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+
+	zapLogger.Info("Connected to PostgreSQL database")
 
 	// register models here
-	db.AutoMigrate(&models.User{})
-
-	return db, err
-}
-
-func New(ctx context.Context) (*gorm.DB, error) {
-	connectionDriver := os.Getenv("DB_DRIVER")
-
-	switch connectionDriver {
-	//
-	case "postgres":
-		// return newPostgresConn(ctx)
-
-	case "sqlite":
-	default:
-		return newSQLiteConn(ctx)
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
-	return nil, nil
+	return db, nil
 }
