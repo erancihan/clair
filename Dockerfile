@@ -10,7 +10,7 @@ RUN npm run css
 # create binary
 FROM golang:1.25-alpine AS builder
 
-RUN apk --no-cache add gcc git musl-dev
+RUN apk --no-cache add git
 
 WORKDIR /go/src/app
 COPY . ./
@@ -21,14 +21,14 @@ COPY --from=css-builder /app/internal/web/static/css ./internal/web/static/css/
 RUN go mod download
 RUN go generate ./...
 
-RUN CGO_ENABLED=1 GOOS=linux go build -tags netgo -a -v -o /go/bin/clair.bin cmd/clair/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /go/bin/clair.bin cmd/clair/main.go
 
 # create final image
 FROM alpine:3.22
 
 ARG APP_ENV
 
-ARG DB_FOLDER
+ARG DATABASE_URL
 
 ARG SERVER_PORT
 

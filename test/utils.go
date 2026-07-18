@@ -10,12 +10,28 @@ import (
 	"time"
 
 	"github.com/erancihan/clair/internal/cmd"
+	"github.com/erancihan/clair/internal/database/models"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
+// defaultTestDatabaseURL points at the Postgres service defined in
+// docker-compose.dev.yaml. Override it with the DATABASE_URL environment
+// variable to run the tests against a different Postgres instance.
+const defaultTestDatabaseURL = "postgres://clair:clair@localhost:5432/clair?sslmode=disable"
+
 func setupTestServer(t *testing.T, port string) (string, func()) {
-	// Setup: Initialize an in-memory SQLite database specifically for testing.
-	os.Setenv("DB_PATH", "file::memory:?cache=shared")
+	// Setup: point the server at a real Postgres database for testing.
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = defaultTestDatabaseURL
+	}
+	os.Setenv("DATABASE_URL", dsn)
 	os.Setenv("SERVER_PORT", port)
+
+	// Reset the schema so each run starts from a clean slate; the server
+	// re-creates the tables via AutoMigrate on startup.
+	resetTestDatabase(t, dsn)
 
 	// Context to cancel server after test
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,6 +71,25 @@ func setupTestServer(t *testing.T, port string) (string, func()) {
 		cancel()
 		// Optional: Add a small sleep to let the OS release the port if running tests rapidly
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// resetTestDatabase drops the tables managed by the app so that tests are
+// idempotent even when run repeatedly against a persistent Postgres instance.
+func resetTestDatabase(t *testing.T, dsn string) {
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to connect to test database at %s: %v", dsn, err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("failed to access test database handle: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if err := db.Migrator().DropTable(&models.User{}); err != nil {
+		t.Fatalf("failed to reset test database: %v", err)
 	}
 }
 

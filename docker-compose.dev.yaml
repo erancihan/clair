@@ -1,26 +1,41 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: clair
+      POSTGRES_PASSWORD: clair
+      POSTGRES_DB: clair
+    volumes:
+      - clair-postgres:/var/lib/postgresql/data
+
+  valkey:
+    image: valkey/valkey:8
+    ports:
+      - "6379:6379"
+
   clair:
     build:
       context: ./
       dockerfile: Dockerfile
+    depends_on:
+      - postgres
+      - valkey
     ports:
       - "4000:4000"
     volumes:
-      - clair-data:/opt/clair/database
       - clair-public:/opt/clair/public
     env_file: ".env"
     environment:
-      - DB_FOLDER=/opt/clair/database
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+      - VALKEY_HOST=valkey
       - PUBLIC_PATH=/opt/clair/public
     command: ./clair.bin server
 
 volumes:
-  clair-data:
+  clair-postgres:
     driver: local
-    driver_opts:
-      type: none
-      device: .opt/clair/data
-      o: bind
   clair-public:
     driver: local
     driver_opts:

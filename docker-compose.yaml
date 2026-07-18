@@ -1,4 +1,15 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: clair
+      POSTGRES_PASSWORD: clair
+      POSTGRES_DB: clair
+    volumes:
+      - database:/var/lib/postgresql/data
+
   valkey:
     image: valkey/valkey:8
     ports:
@@ -7,22 +18,18 @@ services:
   server:
     image: ghcr.io/erancihan/clair:latest
     depends_on:
+      - postgres
       - valkey
     ports:
       - "4000:4000"
-    volumes:
-      - database:/opt/clair/database
     env_file:
       - .env
     environment:
       - NODE_ENV=production
-      - DB_FOLDER=/opt/clair/database
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+      - VALKEY_HOST=valkey
     command: ./clair.bin server
 
 volumes:
   database:
     driver: local
-    driver_opts:
-      type: none
-      device: .opt/clair/database
-      o: bind

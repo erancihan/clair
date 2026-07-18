@@ -1,6 +1,6 @@
 #!make
-include .env
-export $(shell sed -e '/^\#/d' -e 's/=.*//' .env)
+-include .env
+export $(shell sed -e '/^\#/d' -e 's/=.*//' .env 2>/dev/null)
 export GOWORKDIR=./
 
 .PHONY: build
@@ -59,7 +59,16 @@ tidy:
 	go mod tidy
 	go mod vendor
 	
-# testing
+# local infra for development / tests (PostgreSQL + Valkey)
+db-up:
+	docker compose -f docker-compose.dev.yaml up -d postgres
+
+db-down:
+	docker compose -f docker-compose.dev.yaml down
+
+# testing — requires a running PostgreSQL.
+# Point DATABASE_URL at it (defaults to the docker-compose.dev.yaml service):
+#   make db-up && make test
 .PHONY: test
 test:
 	go test ./test/... -v
