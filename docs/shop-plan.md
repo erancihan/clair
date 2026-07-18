@@ -100,29 +100,26 @@ pieces. "Owner" below means *spec owner*, not who types the code:
 | `User.Role` + `AdminMiddleware` | **Shop** | `internal/server/authentication` (§7.1) | booking's `/admin/*` reuse it verbatim |
 | Request-context identity + `CurrentUser(ctx)` | **Shop** | `internal/server/authentication` (§7.2) | every authed handler in both domains |
 | `sid` session/guest id + `OwnerRef` | **Shop** | `internal/server/authentication` (§7.3) | booking's guest `OwnerRef` (its only "who is this") |
-| `newPostgresConn` + driver-switch fix | **Shop** | `internal/database/database.go` (§2.3) | both |
-| Merged `AutoMigrate` + `ifPostgres` guard | **Shop** | `internal/database/database.go` (§2.3) | booking's Postgres-only DDL wraps in `ifPostgres` |
+| PostgreSQL connection + merged `AutoMigrate` (single driver) — **✅ landed on `master`** | Shared | `internal/database/database.go` (§2.3) | both |
+| Valkey client validation (optional, fail-open) — **✅ landed on `master`** | Shared | `internal/utils/valkey.go` | cart accelerator, booking seat-locks |
 | App-wide CSRF + session hardening | **Shop** | `internal/server/authentication` (§7.4–7.5) | booking's `/hold` · `/checkout` · `/cancel` |
 | Reservation kernel (`BookingInventory`/`Hold`/`Payment`, holds/TTL, capture-time commit, seats, waitlist, reaper) | **Booking** | `internal/booking` etc. | — shop does **not** build or touch these |
 
 > **Build order: BOOKING FIRST (updated).** The plan was originally written shop-first (shop *builds*
-> the shared infra in its Phase 0). That is now inverted: **booking is implemented first**, so booking
-> *builds* every shared row above during its own Phase 0, against this shop spec. Design ownership is
-> unchanged; only the typing order moved. Two consequences: (1) the shop's Phase 0 becomes **adopt &
-> verify + gap-fill** rather than build (§11); (2) because booking writes these first, it can easily
-> shape them to booking's needs and diverge from the spec — so the shop hands booking these
-> **acceptance criteria up front**:
+> the shared infra in its Phase 0). That is now inverted: **booking is implemented first**. The two
+> **infrastructure** rows above (Postgres connection, Valkey validation) already **landed on `master`
+> as standalone slices**, ahead of both domains. The remaining shared rows (auth/identity/session/CSRF)
+> are built by **booking** during its Phase 0, against this shop spec — design ownership is unchanged;
+> only the typing order moved. Two consequences: (1) the shop's Phase 0 becomes **adopt & verify +
+> gap-fill** rather than build (§11); (2) because booking writes the auth pieces first, it can shape
+> them to its needs and diverge from the spec — so the shop hands booking these **acceptance criteria
+> up front**:
 >
 > - **Home package.** Identity/session/CSRF helpers land in `internal/server/authentication` (so the
 >   shop can consume them without importing `booking`), **not** in `internal/booking`.
 > - **`OwnerRef` format.** Canonical is `user:<id>` / `guest:<sid>` (§7.3) — **decide this before
 >   writing booking's `BookingHold`/`BookingOrder` rows**, since whoever codes first sets the on-disk
 >   format (booking's doc currently shows a divergent `sess:abc`). See §12.
-> - **SQLite must still stand up.** Booking runs on Postgres, but the shop's fast test harness needs
->   the app to boot on in-memory SQLite: booking's Postgres-only DDL **must** be wrapped in
->   `ifPostgres` and the merged `AutoMigrate` must stay dialect-portable (§2.3, §10.1).
-> - **Fix the `case "sqlite"` bug** (§2.3) while completing `newPostgresConn`, not just the Postgres
->   path — the shop's tests depend on it.
 > - **`User.Role` + `AdminMiddleware`** exist in the shared package with `RoleCustomer`/`RoleAdmin`
 >   even if booking gates admin differently; the shop reuses them verbatim.
 > - **CSRF is app-wide**, mounted so it also covers the shop's future `/shop/*` mutations, not only
@@ -130,17 +127,13 @@ pieces. "Owner" below means *spec owner*, not who types the code:
 
 **Coordination points (shared surfaces to align with the booking work):**
 
-1. **One database, one driver — PostgreSQL (decided).** The shop and booking share a single
-   `*gorm.DB` on Postgres. `internal/database/database.go` completes `newPostgresConn`
-   (`gorm.io/driver/postgres`, `DATABASE_URL`) and fixes the latent `case "sqlite"` bug (§2.3); the
-   shop no longer rides the SQLite default in production. Shop models use only portable GORM tags and
-   the `Shop*` type-prefix derives `shop_*` identically on any driver, so this is a config change,
-   not a schema rewrite. Testing: in-memory SQLite stays valid for fast shop-only unit/endpoint tests
-   (no Postgres-only features used); the shared/cross-domain integration suite runs on Postgres
-   (testcontainers); see §10.1.
-2. **Unified `AutoMigrate` + `ifPostgres` guard (§2.3).** One merged list (`User` once, `sm.*` shop
-   models, then booking's `bm.*`/`am.*`/`tm.*`). Booking's Postgres-only DDL runs inside the shop's
-   `ifPostgres` helper so the SQLite harness stands up cleanly.
+1. **One database, single driver — PostgreSQL (✅ landed).** The shop and booking share one Postgres
+   `*gorm.DB`. `database.New` builds it from `DATABASE_URL` and fails fast if unset; **SQLite was
+   removed entirely** (§2.3), so there is no dev/test SQLite fallback anywhere. All tests — shop and
+   cross-domain — run against Postgres (testcontainers); see §10.1.
+2. **Unified `AutoMigrate` on the single Postgres connection (§2.3).** One merged list (`User` once,
+   `sm.*` shop models, then booking's `bm.*`/`am.*`/`tm.*`). With one driver, booking's Postgres-only
+   DDL runs unconditionally — no dialect guard.
 3. **`User.Role` + `AdminMiddleware` — shop-owned, resolved.** The shop adds `Role`
    (`RoleCustomer`/`RoleAdmin`, string type for headroom) to the shared `User` and owns the single
    `AdminMiddleware` + `CurrentUser`/`OwnerRef` helpers in `internal/server/authentication` (§7).
@@ -264,11 +257,9 @@ type ShopOrderItem struct {
 }
 ```
 
-Register the shop models in the `AutoMigrate` call of **whichever `database.New` path is active**.
-Today the only working registration is `db.AutoMigrate(&models.User{})` inside `newSQLiteConn`
-(`internal/database/database.go`), so add the shop models there for the dev/SQLite server **and** in
-`newPostgresConn` once it's completed for the shared production DB (§2.1) — one merged list per path,
-alongside the shared `User` and the booking models:
+Register the shop models in the single merged `AutoMigrate` inside `database.New`
+(`internal/database/database.go`) — now **PostgreSQL-only** (SQLite was removed, §2.3) — alongside
+the shared `User` and the booking models:
 
 ```go
 import (
@@ -289,33 +280,27 @@ db.AutoMigrate(
 )
 ```
 
-### 2.3 Database wiring & the migration guard (shop-owned)
+### 2.3 Database wiring (single PostgreSQL driver — landed)
 
-The shop completes the DB layer both domains ride on. Three pieces (brief A3/A4):
+> **Landed on `master`.** The DB layer both domains ride on is done: the app was migrated to a
+> **single PostgreSQL driver** and SQLite was removed entirely (which also dropped the only CGO
+> dependency). The shop builds on this — it is no longer future work for anyone's Phase 0.
 
-**(a) `newPostgresConn` + fix the driver switch.** Today `database.New` has a latent bug: `case
-"sqlite":` has an empty body and Go does not fall through, so `DB_DRIVER=sqlite` returns `nil, nil`
-(a nil DB); only an *unset* `DB_DRIVER` reaches the `default` and yields a real SQLite DB.
+`database.New` now builds one Postgres connection from `DATABASE_URL` and **fails fast** if it is
+unset. There is no driver switch and no SQLite path.
 
 ```go
 import (
 	"time"
-	"gorm.io/driver/postgres" // absent today: run `go get gorm.io/driver/postgres`
+	"gorm.io/driver/postgres"
 )
 
 func New(ctx context.Context) (*gorm.DB, error) {
-	switch os.Getenv("DB_DRIVER") {
-	case "postgres":
-		return newPostgresConn(ctx)
-	default: // "", "sqlite", or anything else -> SQLite.
-		// Fixes the old empty `case "sqlite":` that fell to `return nil, nil`.
-		return newSQLiteConn(ctx)
-	}
-}
-
-func newPostgresConn(ctx context.Context) (*gorm.DB, error) {
 	dsn := os.Getenv("DATABASE_URL") // postgres://user:pass@host:5432/clair?sslmode=require
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{PrepareStmt: true})
+	if dsn == "" {
+		return nil, errors.New("DATABASE_URL is required")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{PrepareStmt: true /* + zap→gorm logger */})
 	if err != nil {
 		return nil, err
 	}
@@ -330,29 +315,11 @@ func newPostgresConn(ctx context.Context) (*gorm.DB, error) {
 }
 ```
 
-**(b) `ifPostgres` dialect guard.** Booking's migrations use Postgres-only DDL (partial-unique
-indexes, `CHECK` constraints, `FOR UPDATE` paths). The shop provides one guard so that DDL runs only
-on Postgres and the in-memory-SQLite test harness (§10.1) skips it cleanly rather than erroring.
-
-```go
-// ifPostgres runs Postgres-only DDL only when the live dialect is postgres.
-func ifPostgres(db *gorm.DB, fn func()) {
-	if db.Dialector.Name() == "postgres" {
-		fn()
-	}
-}
-
-// booking's Phase-0 migration then wraps its raw DDL:
-//   ifPostgres(db, func() {
-//     db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_active_bhold ON booking_holds(...) WHERE status='active'`)
-//     db.Exec(`ALTER TABLE booking_inventories ADD CONSTRAINT chk_one_owner CHECK (...)`)
-//   })
-```
-
-**(c) One merged `AutoMigrate` (§2.2)** — registered on whichever connection `New` returns; `User`
-once, shop `sm.*`, then booking's `bm.*`/`am.*`/`tm.*`. Because the shop uses only portable tags, the
-merged `AutoMigrate` + `ifPostgres` guard let the whole app stand up cleanly on SQLite for dev/tests
-and on Postgres in production (contract C, verified in §10.1).
+**One merged `AutoMigrate` (§2.2)** — `User` once, shop `sm.*`, then booking's `bm.*`/`am.*`/`tm.*`.
+Since the only driver is Postgres, booking's Postgres-only DDL (partial-unique indexes, `CHECK`
+constraints, `FOR UPDATE`) now runs **unconditionally** — no dialect guard is needed. (The earlier
+`ifPostgres` helper existed only to keep an in-memory-SQLite test harness standing; with SQLite gone,
+it is obsolete. Tests run against Postgres — see §10.1.)
 
 ---
 
@@ -469,8 +436,10 @@ func (c *Catalog) AddImage(ctx context.Context, productID uint, url, alt string)
 
 ### 3.3 Cart (`cart.go` + two stores)
 
-The Valkey client can be **nil** (see `utils.NewValKeyClient`), so the cart is behind an interface
-and we pick the implementation at wire time. Cart is keyed by the shared `sid` session id (§7.3).
+Valkey is **optional / fail-open**: `utils.NewValKeyClient` now validates the connection at startup
+(PING) and returns **nil** when Valkey is unconfigured or unreachable (landed on `master`). So the
+cart is behind an interface and we pick the implementation at wire time — Valkey when present, the
+`shop_carts` DB store otherwise. Cart is keyed by the shared `sid` session id (§7.3).
 
 ```go
 package shop
@@ -1305,15 +1274,15 @@ is a clean later swap. Add `internal/web/public/products/` to `.gitignore` for l
 ## 10. Testing
 
 Testing is **primarily endpoint (HTTP integration) testing**: each test drives the real
-`Routes()` handler through `net/http/httptest` with an in-memory SQLite DB and a `nil` Valkey
-client (so the cart uses its DB fallback store). A handful of pure-domain unit tests back the
-money/cart math. Everything lives under `test/` and runs with `go test ./test/... -v`.
+`Routes()` handler through `net/http/httptest` against a throwaway **PostgreSQL** and a `nil` Valkey
+client (so the cart uses its DB fallback store — Valkey is optional/fail-open, §3.3). A handful of
+pure-domain unit tests back the money/cart math. Everything lives under `test/` and runs with
+`go test ./test/... -v` (Docker required for the Postgres container).
 
-> **SQLite here, Postgres in production.** Production shares one Postgres DB with the booking domain
-> (§2.1), but the shop uses only portable GORM tags and the `Shop*` type prefix derives `shop_*`
-> table names identically on any driver, so in-memory SQLite is a valid, fast backend for shop-only
-> unit/endpoint tests. Reserve a Postgres backend (testcontainers/dockertest, as the booking suite
-> uses) for cross-domain integration tests that exercise both `shop_*` and `booking_*` in one DB.
+> **Postgres-only, matching production.** SQLite was removed (§2.3), so tests run on the same engine
+> as production. One `testcontainers-go` Postgres starts once per package (`TestMain`); each test gets
+> an isolated **schema** (via `search_path`) so table state never leaks between tests, even in
+> parallel. No dialect differences to reconcile.
 
 ### 10.1 Test harness
 
@@ -1326,25 +1295,57 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/erancihan/clair/internal/database/models" // shared: User
 	sm "github.com/erancihan/clair/internal/shop/models"  // shop: Shop*
 	"github.com/erancihan/clair/internal/server"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/sqlite"
+	gormpg "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// newTestServer spins up the real Routes() against an isolated in-memory DB.
-// nil Valkey => the cart uses the DB fallback store, so no Valkey is needed in CI.
+// One Postgres container for the whole package; testDSN points at it.
+var testDSN string
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+	pg, err := postgres.Run(ctx, "postgres:16-alpine",
+		postgres.WithDatabase("clair_test"),
+		postgres.WithUsername("test"), postgres.WithPassword("test"),
+		testcontainers.WithWaitStrategy(wait.ForListeningPort("5432/tcp")),
+	)
+	if err != nil {
+		panic(err)
+	}
+	testDSN, _ = pg.ConnectionString(ctx, "sslmode=disable")
+	code := m.Run()
+	_ = pg.Terminate(ctx)
+	os.Exit(code)
+}
+
+// newTestServer spins up the real Routes() against an isolated schema in the shared container.
+// nil Valkey => the cart uses the DB fallback store (shop_carts), so no Valkey is needed in CI.
 func newTestServer(t *testing.T) (*httptest.Server, *gorm.DB) {
 	t.Helper()
-	// unique DSN per test => full isolation even when tests run in parallel
-	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	schema := "t_" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_")
+
+	// Create the schema on a bootstrap conn, then open pinned to it via search_path
+	// (search_path in the DSN applies to every pooled connection — a plain SET would not).
+	boot, err := gorm.Open(gormpg.Open(testDSN), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	boot.Exec("CREATE SCHEMA " + schema)
+	t.Cleanup(func() { boot.Exec("DROP SCHEMA " + schema + " CASCADE") })
+
+	db, err := gorm.Open(gormpg.Open(testDSN+" search_path="+schema), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -1724,25 +1725,23 @@ Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ r
 
 ## 11. Phased milestones
 
-**Booking is being implemented first**, so it *builds* the shared infrastructure (§2.1) during its
-Phase 0. The shop is therefore **downstream**: its Phase 0 becomes verify-and-gap-fill, not build,
-and can only begin once booking has landed the shared pieces (or the shop stubs them to develop in
-parallel).
+**Booking is being implemented first**, so the auth/identity shared infrastructure (§2.1) is *built*
+by booking during its Phase 0. The shop is **downstream**: its Phase 0 is verify-and-gap-fill, not
+build. (The DB and Valkey infrastructure already **landed on `master`** as standalone slices — §2.3
+and `internal/utils/valkey.go` — so they are not part of anyone's Phase 0.)
 
-0. **Adopt & verify the shared infrastructure (built by booking; spec-owned by shop, §2.1).** Do
+0. **Adopt & verify the shared auth infrastructure (built by booking; spec-owned by shop, §2.1).** Do
    **not** rebuild it. Instead:
-   - Confirm each shared piece matches this spec: `newPostgresConn` + the `case "sqlite"` fix +
-     `ifPostgres` guard + dialect-portable merged `AutoMigrate` (§2.3); `User.Role`
-     (`RoleCustomer`/`RoleAdmin`) + `AdminMiddleware`; request-context `CurrentUser`; the shared
-     `sid`/`OwnerRef` in the canonical `user:`/`guest:` format (§7.1–7.3); app-wide CSRF + session
-     hardening (§7.4–7.5), all under `internal/server/authentication`.
+   - Confirm each shared piece matches this spec: `User.Role` (`RoleCustomer`/`RoleAdmin`) +
+     `AdminMiddleware`; request-context `CurrentUser`; the shared `sid`/`OwnerRef` in the canonical
+     `user:`/`guest:` format (§7.1–7.3); app-wide CSRF + session hardening (§7.4–7.5), all under
+     `internal/server/authentication`. (DB + Valkey are already done — just consume them.)
    - **Gap-fill** anything booking didn't need: e.g. add `User.Role`/`AdminMiddleware` if booking
-     gated admin differently; extend CSRF mounting to cover `/shop/*`; add the SQLite/`ifPostgres`
-     safety if booking (Postgres-only) skipped it.
+     gated admin differently; extend CSRF mounting to cover `/shop/*`.
    - **Reconcile divergences** against the acceptance criteria in §2.1 — especially the `OwnerRef`
      on-disk format, which booking sets first.
-   **Exit:** the app stands up on both SQLite (shop dev/tests) and Postgres; `CurrentUser`/`OwnerRef`
-   are usable from a shop handler; a tokenless shop `POST` is CSRF-rejected.
+   **Exit:** `CurrentUser`/`OwnerRef` are usable from a shop handler; a tokenless shop `POST` is
+   CSRF-rejected; the app boots on Postgres with the merged `AutoMigrate`.
 1. **Data + domain** — `sm.*` models on the merged `AutoMigrate`, `Catalog`, `Money`, `Slugify`, unit
    tests. No UI.
 2. **Storefront read path** — `/shop`, `/shop/products`, `/shop/products/{slug}`, category pages;
