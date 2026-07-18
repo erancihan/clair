@@ -11,6 +11,7 @@ import (
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/server/games"
+	"github.com/erancihan/clair/internal/utils"
 	"github.com/erancihan/clair/internal/utils/middleware"
 	"github.com/erancihan/clair/internal/utils/router"
 	"github.com/erancihan/clair/internal/web"
@@ -56,13 +57,18 @@ func (s *backend) Routes() http.Handler {
 
 	mux.Group("api", func(api *router.Router) {
 		api.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
+			// Valkey is optional; a degraded Valkey is not an outage, so the
+			// endpoint still reports 200 and surfaces the dependency status.
+			valkeyStatus := utils.ValKeyStatus(r.Context(), s.context.ValKey)
 
 			// return json response
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+
 			json.NewEncoder(w).Encode(map[string]string{
 				"status":  "ok",
 				"version": "1.0.0", // todo: get version from build variable
+				"valkey":  valkeyStatus,
 			})
 		})
 
