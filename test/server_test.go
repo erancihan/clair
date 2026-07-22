@@ -42,6 +42,10 @@ func TestAuthentication(t *testing.T) {
 	// 1. Unauthenticated Access Step
 	t.Run("Fail to access protected route without token", func(t *testing.T) {
 		protectedReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/protected", nil)
+		// /api/protected is a JSON API route; identify as a JSON caller so the
+		// content-negotiated auth failure returns 401 rather than redirecting a
+		// browser to the login page.
+		protectedReq.Header.Set("Accept", "application/json")
 		resp, err := client.Do(protectedReq)
 		if err != nil {
 			t.Fatalf("Failed to make request: %v", err)
