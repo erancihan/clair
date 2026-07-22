@@ -14,8 +14,8 @@ func Home() templ.Component {
 	return pages.Home()
 }
 
-func Login() templ.Component {
-	return pages.LoginPage()
+func Login(next string) templ.Component {
+	return pages.LoginPage(next)
 }
 
 func NotFound() templ.Component {

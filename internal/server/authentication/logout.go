@@ -6,6 +6,10 @@ import (
 	server_context "github.com/erancihan/clair/internal/server/context"
 )
 
+// AuthLogout ends the authenticated session by expiring the session cookie. The
+// long-lived guest "sid" cookie is deliberately left intact so the visitor keeps
+// a stable guest identity (OwnerRef) after signing out — only the authentication
+// session ends here.
 func AuthLogout(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session, _ := store.Get(r, SESSION_NAME)

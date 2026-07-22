@@ -3,6 +3,8 @@ package authentication
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/a-h/templ"
 	"github.com/erancihan/clair/internal/database/models"
@@ -13,9 +15,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// LoginPage renders the login form. It threads a validated `next` return path
+// from the query string into a hidden form field so a browser that was redirected
+// here by AuthMiddleware returns to where it started after signing in.
 func LoginPage(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		templ.Handler(web.Base("Clair", web.Login())).ServeHTTP(w, r)
+		next := safeNext(r.URL.Query().Get("next"), "")
+		templ.Handler(web.Base("Clair", web.Login(next))).ServeHTTP(w, r)
 	}
 }
 
@@ -24,16 +30,34 @@ type LoginPayload struct {
 	Password string `json:"password"`
 }
 
+// AuthLogin authenticates a user and establishes a session. It preserves the
+// existing JSON contract exactly — a JSON request (Content-Type: application/json)
+// still receives a bare 200 with the session cookie set — while additionally
+// supporting HTML form submissions, which are redirected to a validated `next`
+// path (falling back to /dashboard).
 func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		isJSON := strings.Contains(r.Header.Get("Content-Type"), "application/json")
+
 		var creds LoginPayload
-		if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-			http.Error(w, "Invalid request payload", http.StatusBadRequest)
-			return
+		var next string
+
+		if isJSON {
+			if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+				http.Error(w, "Invalid request payload", http.StatusBadRequest)
+				return
+			}
+		} else {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "Invalid request payload", http.StatusBadRequest)
+				return
+			}
+			creds.Email = r.PostFormValue("email")
+			creds.Password = r.PostFormValue("password")
+			next = r.PostFormValue("next")
 		}
 
 		// lookup user in database
-
 		tx := ctx.DBConn.Session(&gorm.Session{Context: r.Context()})
 
 		var user models.User
@@ -58,19 +82,43 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 			Path:     "/",
 			MaxAge:   3600,
 			HttpOnly: true,
-			Secure:   false,
+			Secure:   SecureCookies(),
 			SameSite: http.SameSiteLaxMode,
 		}
 
 		session.Save(r, w)
 
-		// if the request is from API, return 200 OK
-		if r.Header.Get("Content-Type") == "application/json" {
+		// if the request is from API, return 200 OK (unchanged contract)
+		if isJSON {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// else, redirect to dashboard
-		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		// else, redirect to the validated return path (or the dashboard)
+		http.Redirect(w, r, safeNext(next, "/dashboard"), http.StatusFound)
 	}
+}
+
+// safeNext validates a post-login return path so it can only point back into this
+// application. It accepts same-origin absolute paths (a single leading slash) and
+// rejects everything else — empty values, protocol-relative "//host" URLs,
+// backslash tricks, and fully-qualified URLs — falling back to def.
+func safeNext(next, def string) string {
+	if next == "" {
+		return def
+	}
+
+	// Must be an absolute path, and must not be protocol-relative ("//host") or a
+	// backslash variant that some browsers normalise to "//".
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
+		return def
+	}
+
+	// Reject anything that parses as (or carries) an absolute URL with a host.
+	u, err := url.Parse(next)
+	if err != nil || u.IsAbs() || u.Host != "" {
+		return def
+	}
+
+	return next
 }
