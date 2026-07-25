@@ -117,6 +117,13 @@ func newAuthTestServer(t *testing.T) *authTestServer {
 		_, _ = w.Write([]byte(authentication.OwnerRef(w, r)))
 	})
 
+	// Shares the session store with /login, so tests can observe how the CSRF
+	// token behaves across an authentication boundary.
+	mux.Handle("GET /csrf", authentication.CSRF()(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(authentication.CSRFToken(r)))
+		})))
+
 	mux.Handle("GET /owner-auth", authentication.AuthMiddleware(ctx)(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(authentication.OwnerRef(w, r)))

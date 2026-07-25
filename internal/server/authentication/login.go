@@ -77,6 +77,13 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 		session.Values["authenticated"] = true
 		session.Values["id"] = user.ID
 
+		// Rotate the CSRF token across this privilege change. The pre-login token
+		// would otherwise carry into the authenticated session, so anyone who had
+		// planted or observed the visitor's earlier session cookie would hold a
+		// valid token for it. Dropping it makes the next protected request mint a
+		// fresh one.
+		delete(session.Values, csrfSessionField)
+
 		session.Options = sessionCookieOptions()
 
 		session.Save(r, w)
