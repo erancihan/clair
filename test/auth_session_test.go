@@ -1,8 +1,10 @@
 package test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -100,13 +102,44 @@ func TestOwnerRefAuthenticated(t *testing.T) {
 	body := readBody(t, resp)
 	resp.Body.Close()
 
-	if !strings.HasPrefix(body, "user:") {
-		t.Fatalf("expected a user owner reference, got %q", body)
+	if want := fmt.Sprintf("user:%d", user.ID); body != want {
+		t.Errorf("expected OwnerRef %q, got %q", want, body)
 	}
-	if want := "user:"; !strings.HasPrefix(body, want) || body == want {
-		t.Fatalf("expected user:<id>, got %q", body)
+
+	// The authenticated owner reference must not depend on a guest cookie.
+	if got := sidCookie(resp); got != nil {
+		t.Errorf("expected no sid cookie for an authenticated OwnerRef, got %q", got.Value)
 	}
-	_ = user
+}
+
+// TestSessionIDIdempotentWithinRequest verifies that resolving the owner more than
+// once in a single request (e.g. reading a hold, then writing an order) yields one
+// consistent guest id and sets exactly one "sid" cookie — not a second, conflicting
+// identity that would split ownership across the same request.
+func TestSessionIDIdempotentWithinRequest(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		first := authentication.OwnerRef(w, r)
+		second := authentication.SessionID(w, r)
+		_, _ = fmt.Fprintf(w, "%s|guest:%s", first, second)
+	})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cart", nil))
+
+	result := rec.Result()
+	defer result.Body.Close()
+
+	parts := strings.Split(readBody(t, result), "|")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected handler output: %q", parts)
+	}
+	if parts[0] != parts[1] {
+		t.Errorf("owner reference changed within a single request: %q then %q", parts[0], parts[1])
+	}
+
+	if cookies := result.Header.Values("Set-Cookie"); len(cookies) != 1 {
+		t.Errorf("expected exactly 1 Set-Cookie header, got %d: %v", len(cookies), cookies)
+	}
 }
 
 // TestSecureToken sanity-checks SecureToken: URL-safe, non-empty, and unique

@@ -14,7 +14,13 @@ func AuthLogout(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session, _ := store.Get(r, SESSION_NAME)
 
+		// Write the deletion cookie with the same hardened attributes the session
+		// was created with, resolved now rather than at package initialization.
+		// Attributes must line up for the browser to replace the cookie, and a
+		// Secure cookie would be dropped over plain HTTP outside production.
+		session.Options = sessionCookieOptions()
 		session.Options.MaxAge = -1
+
 		session.Save(r, w)
 	}
 }

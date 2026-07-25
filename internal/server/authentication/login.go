@@ -10,7 +10,6 @@ import (
 	"github.com/erancihan/clair/internal/database/models"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/web"
-	"github.com/gorilla/sessions"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -78,13 +77,7 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 		session.Values["authenticated"] = true
 		session.Values["id"] = user.ID
 
-		session.Options = &sessions.Options{
-			Path:     "/",
-			MaxAge:   3600,
-			HttpOnly: true,
-			Secure:   SecureCookies(),
-			SameSite: http.SameSiteLaxMode,
-		}
+		session.Options = sessionCookieOptions()
 
 		session.Save(r, w)
 

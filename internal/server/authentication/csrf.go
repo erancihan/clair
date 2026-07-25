@@ -3,8 +3,6 @@ package authentication
 import (
 	"crypto/subtle"
 	"net/http"
-
-	"github.com/gorilla/sessions"
 )
 
 const (
@@ -63,7 +61,7 @@ func CSRF() func(http.Handler) http.Handler {
 				// Mint a token and persist it so the client can echo it back.
 				expected = SecureToken()
 				session.Values[csrfSessionField] = expected
-				session.Options = csrfCookieOptions()
+				session.Options = sessionCookieOptions()
 				_ = session.Save(r, w)
 			}
 
@@ -84,17 +82,5 @@ func CSRF() func(http.Handler) http.Handler {
 
 			next.ServeHTTP(w, r)
 		})
-	}
-}
-
-// csrfCookieOptions returns hardened cookie options used when the CSRF middleware
-// persists a freshly minted token to the session cookie.
-func csrfCookieOptions() *sessions.Options {
-	return &sessions.Options{
-		Path:     "/",
-		MaxAge:   3600,
-		HttpOnly: true,
-		Secure:   SecureCookies(),
-		SameSite: http.SameSiteLaxMode,
 	}
 }

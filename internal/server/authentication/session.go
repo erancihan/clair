@@ -34,6 +34,11 @@ func SecureToken() string {
 // on the response as an HttpOnly, site-wide, Lax cookie. This id is stable for a
 // browser regardless of whether the user is authenticated, which is what lets the
 // booking domain attribute anonymous activity to a consistent owner.
+//
+// It is idempotent within a request: a freshly minted id is mirrored onto the
+// request so repeat calls return the same value and only one "sid" cookie is ever
+// set per response. Handlers that resolve an owner more than once (for example
+// reading a hold and then writing an order) therefore see one consistent id.
 func SessionID(w http.ResponseWriter, r *http.Request) string {
 	if cookie, err := r.Cookie(sessionIDCookieName); err == nil && cookie.Value != "" {
 		return cookie.Value
@@ -49,6 +54,11 @@ func SessionID(w http.ResponseWriter, r *http.Request) string {
 		Secure:   SecureCookies(),
 		SameSite: http.SameSiteLaxMode,
 	})
+
+	// Mirror the new id onto the request so later calls in this same request read
+	// it back instead of minting (and setting) a second, conflicting id.
+	r.AddCookie(&http.Cookie{Name: sessionIDCookieName, Value: sid})
+
 	return sid
 }
 
@@ -56,6 +66,11 @@ func SessionID(w http.ResponseWriter, r *http.Request) string {
 // callers get "user:<id>"; everyone else gets "guest:<sid>", minting the guest
 // session cookie if needed. This exact on-disk format is persisted by downstream
 // domains (e.g. booking holds and orders), so it must remain stable.
+//
+// "Authenticated" here means an Identity is present in the request context, which
+// AuthMiddleware injects. On a route that is NOT behind AuthMiddleware a signed-in
+// visitor is indistinguishable from a guest and will get "guest:<sid>", so any
+// route whose ownership should follow the account must run behind it.
 func OwnerRef(w http.ResponseWriter, r *http.Request) string {
 	if identity, ok := CurrentUser(r.Context()); ok {
 		return fmt.Sprintf("user:%d", identity.UserID)
