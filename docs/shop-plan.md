@@ -91,39 +91,23 @@ either axis:**
 | Booking kernel / appointments / ticketing | `internal/{booking,appointments,ticketing}/models` | `booking_` | `booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, … |
 | Shared | `internal/database/models` | *(bare)* | `users` |
 
-**Ownership split (reconciled with the booking design).** The shop is the **design authority** (spec
-owner) for the shared infrastructure; booking owns its reservation kernel and consumes the shared
-pieces. "Owner" below means *spec owner*, not who types the code:
+**Ownership split (reconciled with the booking design).** All the shared infrastructure has **landed
+on `master`** as standalone slices; the shop and booking both **consume** it and neither rebuilds it.
+Booking additionally owns its reservation kernel. Where each shared piece lives and who uses it:
 
-| Shared piece | Spec owner | Where | Consumed by |
+| Shared piece | Status | Where | Consumed by |
 |---|---|---|---|
-| `User.Role` + `AdminMiddleware` | **Shop** | `internal/server/authentication` (§7.1) | booking's `/admin/*` reuse it verbatim |
-| Request-context identity + `CurrentUser(ctx)` | **Shop** | `internal/server/authentication` (§7.2) | every authed handler in both domains |
-| `sid` session/guest id + `OwnerRef` | **Shop** | `internal/server/authentication` (§7.3) | booking's guest `OwnerRef` (its only "who is this") |
-| PostgreSQL connection + merged `AutoMigrate` (single driver) — **✅ landed on `master`** | Shared | `internal/database/database.go` (§2.3) | both |
-| Valkey client validation (optional, fail-open) — **✅ landed on `master`** | Shared | `internal/utils/valkey.go` | cart accelerator, booking seat-locks |
-| App-wide CSRF + session hardening | **Shop** | `internal/server/authentication` (§7.4–7.5) | booking's `/hold` · `/checkout` · `/cancel` |
-| Reservation kernel (`BookingInventory`/`Hold`/`Payment`, holds/TTL, capture-time commit, seats, waitlist, reaper) | **Booking** | `internal/booking` etc. | — shop does **not** build or touch these |
+| Auth / identity / session / CSRF — roles (`user`/`admin`), `CurrentUser`, `sid`/`OwnerRef`, `AdminMiddleware`, `SecureToken` | **✅ landed (PR #15)** | `internal/server/authentication` (§7) | shop + booking consume |
+| PostgreSQL connection + merged `AutoMigrate` (single driver) | **✅ landed** | `internal/database/database.go` (§2.3) | both |
+| Valkey client validation (optional, fail-open) | **✅ landed** | `internal/utils/valkey.go` | cart accelerator, booking seat-locks |
+| Reservation kernel (`BookingInventory`/`Hold`/`Payment`, holds/TTL, capture-time commit, seats, waitlist, reaper) | Booking-owned | `internal/booking` etc. | — shop does **not** build or touch these |
 
-> **Build order: BOOKING FIRST (updated).** The plan was originally written shop-first (shop *builds*
-> the shared infra in its Phase 0). That is now inverted: **booking is implemented first**. The two
-> **infrastructure** rows above (Postgres connection, Valkey validation) already **landed on `master`
-> as standalone slices**, ahead of both domains. The remaining shared rows (auth/identity/session/CSRF)
-> are built by **booking** during its Phase 0, against this shop spec — design ownership is unchanged;
-> only the typing order moved. Two consequences: (1) the shop's Phase 0 becomes **adopt & verify +
-> gap-fill** rather than build (§11); (2) because booking writes the auth pieces first, it can shape
-> them to its needs and diverge from the spec — so the shop hands booking these **acceptance criteria
-> up front**:
->
-> - **Home package.** Identity/session/CSRF helpers land in `internal/server/authentication` (so the
->   shop can consume them without importing `booking`), **not** in `internal/booking`.
-> - **`OwnerRef` format.** Canonical is `user:<id>` / `guest:<sid>` (§7.3) — **decide this before
->   writing booking's `BookingHold`/`BookingOrder` rows**, since whoever codes first sets the on-disk
->   format (booking's doc currently shows a divergent `sess:abc`). See §12.
-> - **`User.Role` + `AdminMiddleware`** exist in the shared package with `RoleCustomer`/`RoleAdmin`
->   even if booking gates admin differently; the shop reuses them verbatim.
-> - **CSRF is app-wide**, mounted so it also covers the shop's future `/shop/*` mutations, not only
->   booking's routes.
+> **Build order (resolved).** The plan was originally written shop-first (shop *builds* the shared
+> infra), then flipped booking-first. In the end all three shared slices — **auth (PR #15)**, Postgres,
+> Valkey — landed independently, ahead of both domains. So the shop simply **consumes** them (§7, §2.3);
+> its Phase 0 is now just wiring the shared middleware onto shop routes (§11). The `OwnerRef` on-disk
+> format shipped as `user:<id>` / `guest:<sid>` — **that decision is now locked** (booking's holds/
+> orders adopt it; its `sess:abc` examples are superseded).
 
 **Coordination points (shared surfaces to align with the booking work):**
 
@@ -134,10 +118,10 @@ pieces. "Owner" below means *spec owner*, not who types the code:
 2. **Unified `AutoMigrate` on the single Postgres connection (§2.3).** One merged list (`User` once,
    `sm.*` shop models, then booking's `bm.*`/`am.*`/`tm.*`). With one driver, booking's Postgres-only
    DDL runs unconditionally — no dialect guard.
-3. **`User.Role` + `AdminMiddleware` — shop-owned, resolved.** The shop adds `Role`
-   (`RoleCustomer`/`RoleAdmin`, string type for headroom) to the shared `User` and owns the single
-   `AdminMiddleware` + `CurrentUser`/`OwnerRef` helpers in `internal/server/authentication` (§7).
-   Booking reuses them; nobody builds a second role system.
+3. **`User.Role` + `AdminMiddleware` — ✅ landed (PR #15), shop consumes.** The shared layer ships
+   `models.User.Role` (`RoleUser`/`RoleAdmin`), `AdminMiddleware`, and `CurrentUser`/`OwnerRef` in
+   `internal/server/authentication` (§7). The shop imports them; it builds no role system, user model,
+   or session code of its own.
 4. **Routes are already disjoint.** Shop: `/shop/*`, `/shop/admin/*`. Booking: `/appointments/*`,
    `/events/*`, `/admin/*`, `/webhooks/*`. This is exactly why we picked `/shop/admin` over
    `/admin/shop` — it keeps the shop out of booking's top-level `/admin` group. Keep it that way.
@@ -225,7 +209,8 @@ const (
 type ShopOrder struct {
 	gorm.Model
 	Number   string          `json:"number" gorm:"uniqueIndex"` // high-entropy, unguessable — sole IDOR guard for guest view (§12)
-	UserID   *uint           `json:"user_id" gorm:"index"`      // nullable => guest checkout; -> users.id
+	OwnerRef string          `json:"-" gorm:"index"`            // canonical owner: "user:<id>" | "guest:<sid>" (api_auth.OwnerRef, §7.3)
+	UserID   *uint           `json:"user_id" gorm:"index"`      // denormalized convenience when authed; nil for guest
 	Email    string          `json:"email"   gorm:"index"`
 	Status   ShopOrderStatus `json:"status"  gorm:"index;default:pending_payment"`
 	Currency string          `json:"currency"`
@@ -439,7 +424,9 @@ func (c *Catalog) AddImage(ctx context.Context, productID uint, url, alt string)
 Valkey is **optional / fail-open**: `utils.NewValKeyClient` now validates the connection at startup
 (PING) and returns **nil** when Valkey is unconfigured or unreachable (landed on `master`). So the
 cart is behind an interface and we pick the implementation at wire time — Valkey when present, the
-`shop_carts` DB store otherwise. Cart is keyed by the shared `sid` session id (§7.3).
+`shop_carts` DB store otherwise. Cart ownership follows `api_auth.OwnerRef` (`"user:<id>"` /
+`"guest:<sid>"`); see §7.3 for the soft-auth requirement and the raw-`sid` interim that avoids a
+split cart.
 
 ```go
 package shop
@@ -591,13 +578,14 @@ type ShippingDetails struct {
 	Email, Name, Address, City, Postal, Country string
 }
 
-func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails, orderNumber string) (*sm.ShopOrder, error) {
+func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails, orderNumber, owner string) (*sm.ShopOrder, error) {
 	if len(cart.Items) == 0 {
 		return nil, ErrEmptyCart
 	}
 
+	// owner is api_auth.OwnerRef(w, r), resolved by the checkout handler: "user:<id>" | "guest:<sid>".
 	order := &sm.ShopOrder{
-		Number: orderNumber, Email: s.Email, Status: sm.ShopOrderPendingPayment,
+		Number: orderNumber, OwnerRef: owner, Email: s.Email, Status: sm.ShopOrderPendingPayment,
 		Currency: cart.Currency,
 		ShipName: s.Name, ShipAddress: s.Address, ShipCity: s.City,
 		ShipPostal: s.Postal, ShipCountry: s.Country,
@@ -692,13 +680,15 @@ func (s *Service) ProductDetail(ctx server_context.BackEndContext) http.HandlerF
 
 ### 4.3 Add-to-cart (`cart.go`)
 
-The cart keys on the **shared `sid`** (§7.3), not a shop-private `cart_id` cookie, so an anonymous
-buyer has one identity across shop and booking. `api_auth.SessionID` mints the cookie on first use.
+The cart key comes from the shared auth layer, not a shop-private cookie. Until the soft-auth
+middleware lands (§7.3 / §7.8) this uses the raw `sid` (`api_auth.SessionID`) — stable whether or not
+an `Identity` is injected, so a signed-in shopper and a guest never split. Once soft-auth is mounted
+on cart routes, switch the key to `api_auth.OwnerRef(w, r)` and add merge-on-login (§7.4).
 
 ```go
 func (s *Service) AddToCart(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := api_auth.SessionID(w, r) // shared guest/session id (was the shop's cart_id)
+		id := api_auth.SessionID(w, r) // interim cart key (raw sid); -> OwnerRef once soft-auth lands
 		slug := r.FormValue("slug")
 		qty, _ := strconv.Atoi(r.FormValue("qty"))
 		if qty <= 0 {
@@ -734,8 +724,11 @@ func (s *Service) AddToCart(ctx server_context.BackEndContext) http.HandlerFunc 
 
 ### 4.4 Wiring into `server.go`
 
-Add a `shop` group to `Routes()`. Public routes are open; the `admin` subgroup reuses
-`api_auth.AuthMiddleware` (extended with a role check — see §7).
+Add a `shop` group to `Routes()`. Storefront reads are public; the `admin` subgroup uses
+`api_auth.AdminMiddleware`; the whole group carries `api_auth.CSRF()` (guards mutations, no-ops on
+safe methods). Cart + checkout additionally want **soft-auth** so `OwnerRef` resolves the signed-in
+shopper — pending that shared-layer middleware (§7.3/§7.8), they run public and key the cart on the
+raw `sid`.
 
 > **Route strings: exactly one space between method and path.** The repo's router splits on the
 > first space (`strings.Cut(path, " ")`) and does not trim spaces from the path, so `"GET  /cart"`
@@ -781,7 +774,7 @@ mux.Group("shop", func(shop *router.Router) {
 		admin.HandleFunc("GET /orders/{number}",     shopSvc.AdminOrderDetail(s.context))
 		admin.HandleFunc("POST /orders/{number}/status", shopSvc.AdminOrderStatus(s.context))
 	})
-}, api_auth.CSRF()) // group-level CSRF: no-op on safe methods, guards every POST (§7.4)
+}, api_auth.CSRF()) // group-level CSRF: no-op on safe methods, guards every POST (§7.5)
 ```
 
 Add a `"/shop"` nav entry in `internal/web/components/header.templ` (`@NavItem("/shop", false, "Shop")`).
@@ -943,258 +936,108 @@ Admin order management is a list view + detail with a status `<select>` POSTing 
 
 ---
 
-## 7. Auth, identity & app-wide security (shop-owned shared infrastructure)
+## 7. Auth & identity — consume the shared layer (landed, PR #15)
 
-Per the booking-reconciliation brief (§2.1), the shop is the **spec owner** of these shared
-auth/identity/security primitives; both domains reuse them. **Build order is booking-first** (§11), so
-booking implements this section during its Phase 0 and the shop verifies + gap-fills against it — the
-signatures below are the contract. All of it lives in `internal/server/authentication` (imported as
-`api_auth` in `server.go`) — **not** a shop-only package — so `/appointments`, `/events`, and
-`/admin/*` can consume it without importing `shop`.
+The unified authentication/identity/session/CSRF layer **landed on `master` (PR #15)** in
+`internal/server/authentication` (imported as `api_auth`). The shop **does not build or duplicate any
+of it** — no login, session, user model, roles, or token code lives in the shop package. Roles are
+generic `user` / `admin` (the layer is central, not shop-specific). This section is purely how the
+shop *consumes* it; any missing capability is **raised upstream** (§7.8), not re-implemented here.
 
-_Snippets below elide `import` blocks for brevity; each uses only stdlib + existing repo packages
-(the new files need: `identity.go` → `context`; `middleware.go` also `strings`, `net/url`;
-`session.go` → `net/http`, `encoding/base64`, `crypto/rand`, `fmt`; `csrf.go` → `crypto/subtle`,
-`net/http`; `constant.go` also `os`)._
-
-### 7.1 Roles & `AdminMiddleware`
-
-`models.User` gains a `Role` (string, so there's headroom for `vendor`/`staff` later without a
-schema change). `AdminMiddleware` layers a role gate on the session check.
+### 7.1 What we import
 
 ```go
-// internal/database/models/users.go — User is the ONE shared model (bare `users` table).
-type User struct {
-	gorm.Model
-	ID       uint   `json:"id" gorm:"primaryKey"`
-	Username string `json:"username"`
-	Email    string `json:"email" gorm:"uniqueIndex"`
-	Password string `json:"password"`
-	Role     string `json:"role" gorm:"index;default:customer"` // see RoleCustomer/RoleAdmin
-}
+import api_auth "github.com/erancihan/clair/internal/server/authentication"
 ```
 
-```go
-// internal/server/authentication/roles.go
-const (
-	RoleCustomer = "customer"
-	RoleAdmin    = "admin"
-)
+| Symbol | Use in the shop |
+|---|---|
+| `api_auth.RoleUser` / `RoleAdmin` (`"user"`/`"admin"`) | role checks (via middleware) |
+| `models.User` (now has `Role`; `Password` is `json:"-"`) | the one shared user model — shop adds none |
+| `api_auth.Identity{UserID, Role}` + `CurrentUser(ctx)` | know the signed-in shopper in a handler |
+| `api_auth.AuthMiddleware` / `AdminMiddleware` | gate authed / admin routes |
+| `api_auth.SessionID(w, r)` | the long-lived HttpOnly `sid` cookie |
+| `api_auth.OwnerRef(w, r)` → `"user:<id>"` \| `"guest:<sid>"` | cart & order ownership (§7.3) |
+| `api_auth.CSRF()` + `CSRFToken(r)` + `CSRFHeaderName`/`CSRFFieldName` | protect shop mutations (§7.5) |
+| `api_auth.SecureToken()` | the shop order `Number` (guest IDOR guard, §12) |
 
-// AdminMiddleware wraps AuthMiddleware (so identity is already in context) and gates on role.
-// Booking's /admin/* routes reuse this verbatim.
-func AdminMiddleware(ctx server_context.BackEndContext) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return AuthMiddleware(ctx)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id, ok := CurrentUser(r.Context()) // no second DB query — AuthMiddleware injected it
-			if !ok || id.Role != RoleAdmin {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-			next.ServeHTTP(w, r)
-		}))
-	}
-}
+Behaviour inherited from the layer (do not re-implement): auth failure is **content-negotiated**
+(JSON → 401, browser → 302 `/login?next=…`); `GET /api/v1/users` is admin-only (not a public
+directory); `SESSION_KEY` is mandatory when `APP_ENV=production`.
+
+### 7.2 Per-route middleware
+
+| Route group | Middleware |
+|---|---|
+| Storefront reads (`GET /shop`, products, categories) | none (public) |
+| Cart + checkout (`/shop/cart/*`, `/shop/checkout`) | **soft-auth** (§7.3) + `CSRF()` on writes |
+| CMS (`/shop/admin/*`) | `AdminMiddleware` + `CSRF()` on writes |
+
+The shop has **no webhook** (payments are mock, §0); `VerifyProviderSignature` is unused here.
+
+### 7.3 Cart & order ownership (explicit — required call-out)
+
+Carts and orders are keyed on **`OwnerRef`** — `"user:<id>"` for a signed-in shopper, `"guest:<sid>"`
+otherwise. Anonymous carts work out of the box via the `sid` cookie, and the format is identical to
+what booking persists.
+
+**The nuance, made explicit:** `OwnerRef` reports `user:<id>` **only when an `Identity` has been
+injected** — i.e. the request ran through an auth middleware. But the public storefront/cart pages
+**cannot** sit behind the *blocking* `AuthMiddleware`: it 401s/redirects anonymous shoppers, and
+**guest checkout is a locked decision** (§12). Without identity injection, a signed-in shopper looks
+like a guest → **split cart**.
+
+**Decision:** cart + checkout routes run behind a **soft-auth** step that injects `Identity` when a
+valid session exists but lets anonymous shoppers pass. Then `OwnerRef` is consistent on every cart
+route (user *or* guest) and there is no split.
+
+**Gap (raised upstream, §7.8):** the shared layer ships only the *blocking* `AuthMiddleware`. The
+soft-auth injector belongs in the shared layer (booking needs the identical thing for guest holds),
+not the shop. **Interim, until it lands:** key the cart on the raw `sid` (`api_auth.SessionID(w, r)`)
+— stable whether or not identity is injected, so no split — and resolve `OwnerRef` only at the moment
+the order is created at checkout.
+
+### 7.4 Guest cart merge on login (decision: merge)
+
+When a shopper with a `guest:<sid>` cart signs in, the shop **merges** the guest cart into their
+`user:<id>` cart (union of line items; quantities summed, capped at stock). The `sid` cookie survives
+logout, so the guest cart persists — merging avoids a "lost cart" surprise. (Replace / prompt were
+considered and rejected as more surprising.) Trigger it right after a successful sign-in, or lazily on
+the next cart access when `CurrentUser` is present yet a `guest:<sid>` cart still exists.
+
+### 7.5 CSRF on shop mutations
+
+`CSRF()` is **not** mounted globally (login/register are intentionally exempt). Mount it on the shop
+group so every shop `POST/PUT/PATCH/DELETE` (add-to-cart, update-quantity, remove, checkout, all
+`/shop/admin` writes) is guarded; safe methods pass through. In templ forms render the hidden field;
+AJAX sends the header.
+
+```templ
+<input type="hidden" name={ api_auth.CSRFFieldName } value={ api_auth.CSRFToken(r) }/>
 ```
 
-### 7.2 Request-context identity — `AuthMiddleware` injection + `CurrentUser`
+Thread `api_auth.CSRFToken(r)` into the view data (forms); `fetch()` callers send
+`api_auth.CSRFHeaderName`.
 
-Today `AuthMiddleware` validates the session but injects nothing, so no handler can cheaply learn
-who the caller is. We fix that: `AuthMiddleware` stores an `Identity{UserID, Role}` in the request
-context, and `CurrentUser(ctx)` reads it. This is **load-bearing for booking** — it has no other
-source of "who is this."
+### 7.6 Admin CMS
 
-```go
-// internal/server/authentication/identity.go
-type ctxKey int
+`/shop/admin/*` runs behind `api_auth.AdminMiddleware`: admin passes; role `user` → 403;
+unauthenticated browser → 302 `/login?next=…`; JSON caller → 401 (content-negotiated). No shop-side
+role logic — the middleware and role constants come from the shared layer.
 
-const identityKey ctxKey = iota
+### 7.7 Sign-in-to-continue
 
-type Identity struct {
-	UserID uint
-	Role   string
-}
+For a gated action, link to `/login?next=/shop/checkout` (or the target path). The shared login page
+round-trips `next` and redirects back after sign-in; the value is validated **same-origin absolute
+paths only** (`//host`, absolute URLs, and backslash tricks are rejected → `/dashboard`), so it can't
+be used for external returns.
 
-func withIdentity(ctx context.Context, id Identity) context.Context {
-	return context.WithValue(ctx, identityKey, id)
-}
+### 7.8 Gaps raised upstream (do not duplicate in the shop)
 
-// CurrentUser returns the authenticated identity; ok == false for anonymous requests.
-func CurrentUser(ctx context.Context) (Identity, bool) {
-	id, ok := ctx.Value(identityKey).(Identity)
-	return id, ok
-}
-```
-
-```go
-// middleware.go — inject identity on success; content-negotiate the failure (decided, §12).
-func AuthMiddleware(ctx server_context.BackEndContext) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			session, err := store.Get(r, SESSION_NAME)
-			if err != nil {
-				unauthorized(w, r)
-				return
-			}
-			auth, _ := session.Values["authenticated"].(bool)
-			userID, _ := session.Values["id"].(uint)
-			if !auth || userID == 0 {
-				unauthorized(w, r)
-				return
-			}
-
-			var user models.User
-			tx := ctx.DBConn.Session(&gorm.Session{Context: r.Context()})
-			tx.Limit(1).Where("id = ?", userID).Find(&user)
-			if user.ID == 0 { // user deleted since login
-				unauthorized(w, r)
-				return
-			}
-
-			r = r.WithContext(withIdentity(r.Context(), Identity{UserID: user.ID, Role: user.Role}))
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// unauthorized: browsers → redirect to /login (with return path); API/JSON → 401.
-func unauthorized(w http.ResponseWriter, r *http.Request) {
-	if strings.Contains(r.Header.Get("Accept"), "application/json") ||
-		r.Header.Get("Content-Type") == "application/json" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.Path), http.StatusFound)
-}
-```
-
-> **`next` must be honored by the login flow.** Today `LoginPage` ignores the request and `AuthLogin`
-> hard-redirects to `/dashboard` (`login.go`). For the redirect above to actually return the user to
-> the deep-linked admin URL, `LoginPage` must render `next` into a hidden field and `AuthLogin` must
-> redirect to it **after validating it is a same-origin, leading-slash path** (reject absolute URLs /
-> `//host` to avoid an open redirect), falling back to `/dashboard`. Do this in Phase 0 or drop the
-> `next` param.
-
-### 7.3 Shared session / guest identity (`sid`) — used by cart AND booking
-
-The shop's cart key and booking's guest `OwnerRef` must be the **same** anonymous id, so we
-generalize the old `cart_id` cookie into one `sid` cookie scoped to `/` (every domain sees it).
-`OwnerRef` is the single answer to "who owns this cart / hold / order."
-
-```go
-// internal/server/authentication/session.go
-const SessionCookie = "sid" // shared guest/session id (was the shop's cart_id)
-
-// SessionID returns a stable per-browser id, minting an HttpOnly cookie on first use.
-func SessionID(w http.ResponseWriter, r *http.Request) string {
-	if c, err := r.Cookie(SessionCookie); err == nil && c.Value != "" {
-		return c.Value
-	}
-	id := SecureToken() // NOT utils.GenerateGameID (~47 bits) — see note below
-	http.SetCookie(w, &http.Cookie{
-		Name: SessionCookie, Value: id, Path: "/", // "/" not "/shop" — booking reads it too
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		MaxAge: 90 * 24 * 3600, Secure: SecureCookies(),
-	})
-	return id
-}
-
-// OwnerRef owns carts, holds, and orders: "user:<id>" when authenticated, else "guest:<sid>".
-// This is the canonical format; booking adopts it (its §6.3 "sess:abc" examples are illustrative
-// and superseded by this "user:"/"guest:" prefixing).
-func OwnerRef(w http.ResponseWriter, r *http.Request) string {
-	if id, ok := CurrentUser(r.Context()); ok {
-		return fmt.Sprintf("user:%d", id.UserID)
-	}
-	return "guest:" + SessionID(w, r)
-}
-```
-
-The shop cart (§4.3) now keys on `api_auth.SessionID(w, r)` instead of its own `cart_id` cookie.
-(Nice-to-have: on login, migrate the `guest:<sid>` cart to the `user:<id>` owner.)
-
-> **`SecureToken()`** is a small helper — `base64.RawURLEncoding.EncodeToString(b)` over 32
-> `crypto/rand` bytes (~256 bits). The `sid` is a long-lived (90-day) cross-domain identity and the
-> CSRF value is a secret, so **do not** reuse `utils.GenerateGameID` (an ~8-char, ~47-bit game id)
-> for either — it's built for short-lived game instances.
-
-### 7.4 App-wide CSRF (one strategy, both domains)
-
-A synchronizer token bound to the session, verified by one shared middleware on every unsafe method
-across shop **and** booking mutating routes (add-to-cart, checkout, order-status, and booking's
-`/hold` · `/checkout` · `/cancel`). The **payment webhook is exempt** — it's authenticated by the
-provider's signature, not a browser session.
-
-```go
-// internal/server/authentication/csrf.go
-func CSRFToken(r *http.Request) (string, error) { // read-or-create; render into a hidden field
-	sess, _ := store.Get(r, SESSION_NAME)
-	if t, ok := sess.Values["csrf"].(string); ok && t != "" {
-		return t, nil
-	}
-	sess.Values["csrf"] = SecureToken() // 256-bit, not GenerateGameID (see §7.3 note)
-	return sess.Values["csrf"].(string), nil // caller must sess.Save on the response
-}
-
-func CSRF() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-				sess, _ := store.Get(r, SESSION_NAME)
-				want, _ := sess.Values["csrf"].(string)
-				got := r.Header.Get("X-CSRF-Token")
-				if got == "" {
-					got = r.PostFormValue("csrf_token")
-				}
-				if want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
-					http.Error(w, "bad CSRF token", http.StatusForbidden)
-					return
-				}
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-```
-
-Wire it per group (the custom router's `Group` takes trailing middleware) — on `/shop` and booking's
-`/appointments` · `/events` · `/admin`, but **not** `/webhooks`:
-
-```go
-mux.Group("shop", func(shop *router.Router) { /* … */ }, api_auth.CSRF())
-```
-
-Every state-changing templ form carries `<input type="hidden" name="csrf_token" value={ token }>`,
-where `token` comes from `api_auth.CSRFToken(r)` (thread it through the view data). AJAX callers send
-the `X-CSRF-Token` header instead.
-
-### 7.5 Session hardening
-
-Replace the hard-coded signing key (`constant.go`) with an env secret that **fails closed** in
-production, and make cookies `Secure` behind TLS. This affects every authed/guest flow in both
-domains, so it is a shared prerequisite, not a shop nicety.
-
-```go
-// internal/server/authentication/constant.go
-var store = sessions.NewCookieStore(sessionKey())
-
-func sessionKey() []byte {
-	if k := os.Getenv("SESSION_KEY"); k != "" {
-		return []byte(k)
-	}
-	if os.Getenv("APP_ENV") == "production" {
-		panic("SESSION_KEY must be set in production") // fail closed
-	}
-	return []byte("dev-only-insecure-key-change-me") // dev fallback only
-}
-
-// SecureCookies reports whether cookies should set the Secure flag (prod/TLS).
-func SecureCookies() bool { return os.Getenv("APP_ENV") == "production" }
-```
-
-`AuthLogin` (`login.go`) should set `Secure: api_auth.SecureCookies()` on the session cookie instead
-of the hard-coded `false`.
+- **Soft / optional auth middleware** — inject `Identity` when a valid session exists, pass anonymous
+  through (no 401/redirect). Needed by the shop's public cart routes (§7.3) and by booking's guest
+  holds. Request it in `internal/server/authentication` rather than reading the session store from the
+  shop package.
 
 ---
 
@@ -1512,7 +1355,7 @@ func TestProductDetail(t *testing.T) {
 | 7 | Boundary | Non-numeric qty | — | `slug=x&qty=abc` | 303 | Atoi fails → qty 1 |
 | 8 | Boundary | Huge qty | — | `slug=x&qty=999999` | 303 | accepted; stock checked at checkout 🚩 |
 | 9 | Security | Price tampering | — | `slug=x&price=1` | 303 | price sourced from DB, form price ignored |
-| 10 | Security | CSRF | cross-site POST, no token | `slug=x&qty=1` | 403 | rejected by CSRF middleware (§7.4) |
+| 10 | Security | CSRF | cross-site POST, no token | `slug=x&qty=1` | 403 | rejected by CSRF middleware (§7.5) |
 | 11 | Method | Wrong verb | — | `GET /shop/cart/add` | 405 | Method Not Allowed |
 
 #### `POST /shop/cart/update`
@@ -1560,7 +1403,7 @@ func TestProductDetail(t *testing.T) {
 | 7 | Validation | Invalid email | — | `email=notanemail` | 400 | error, no order |
 | 8 | State | Double submit | same cart posted twice | POST ×2 | 303, then 400 | cart cleared on success (§3.4); 2nd sees empty cart → `ErrEmptyCart` |
 | 9 | Security | Price/total tampering | hidden price/total field | tampered fields | 303 | server recomputes totals from cart/DB |
-| 10 | Security | CSRF | cross-site POST, no token | valid fields | 403 | rejected by CSRF middleware (§7.4) |
+| 10 | Security | CSRF | cross-site POST, no token | valid fields | 403 | rejected by CSRF middleware (§7.5) |
 | 11 | Method | Wrong verb | — | `DELETE /shop/checkout` | 405 | Method Not Allowed |
 
 #### `GET /shop/orders/{number}`
@@ -1577,7 +1420,7 @@ func TestProductDetail(t *testing.T) {
 
 **Admin access-control matrix** — applies to **every** `/shop/admin/*` route (assert once per route, or via a shared helper):
 
-Failure is content-negotiated (decided, §7.2/§12): browsers get a redirect to `/login`, JSON callers
+Failure is content-negotiated (decided, §7.6/§12): browsers get a redirect to `/login`, JSON callers
 get a status code.
 
 | # | Scenario | State | Request | Expected status | Expected result |
@@ -1585,10 +1428,10 @@ get a status code.
 | 1 | Unauthenticated (browser) | no session cookie, `Accept: text/html` | any `/shop/admin/*` | 302 | redirect to `/login?next=…`; handler never runs |
 | 2 | Unauthenticated (API) | no session cookie, `Accept: application/json` | any admin route | 401 | Unauthorized; handler never runs |
 | 3 | Invalid/expired session | malformed cookie | any admin route | 302 / 401 | per content negotiation |
-| 4 | Authenticated non-admin | `role=customer` session | any admin route | 403 | Forbidden (no redirect loop) |
+| 4 | Authenticated non-admin | `role=user` session | any admin route | 403 | Forbidden (no redirect loop) |
 | 5 | Authenticated admin | `role=admin` session | any admin route | 2xx/3xx | proceeds per endpoint |
 | 6 | Session user deleted | valid cookie, user row gone | any admin route | 302 / 401 | middleware re-checks user, then negotiates |
-| 7 | CSRF missing/bad on mutation | admin session, POST without token | any admin `POST` | 403 | `bad CSRF token` (§7.4) |
+| 7 | CSRF missing/bad on mutation | admin session, POST without token | any admin `POST` | 403 | `bad CSRF token` (§7.5) |
 
 Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ rows covered above.
 
@@ -1694,7 +1537,7 @@ Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ r
 | 5 | State | Illegal transition | paid → pending | `status=pending_payment` | 400 | rejected by the state-machine guard (§12); status unchanged |
 | 6 | Validation | Invalid status value | — | `status=banana` | 400 | rejected, unchanged |
 | 7 | Not found | Unknown number | — | `POST …/ZZZ/status` | 404 | NotFound |
-| 8 | Security | CSRF | cross-site POST, no token | `status=paid` | 403 | rejected by CSRF middleware (§7.4) |
+| 8 | Security | CSRF | cross-site POST, no token | `status=paid` | 403 | rejected by CSRF middleware (§7.5) |
 | 9 | Method | Wrong verb | — | `GET …/N/status` | 405 | Method Not Allowed |
 
 ### 10.7 Cross-cutting & routing
@@ -1708,8 +1551,8 @@ Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ r
 | 5 | Nav link present | — | `GET /shop/` | 200 | header includes `/shop` link |
 | 6 | Session cookie attributes | first cart interaction | `POST /shop/cart/add` | 303 | `Set-Cookie sid` HttpOnly, `Path=/`, SameSite=Lax (shared with booking, §7.3) |
 | 7 | Base shell integrity | — | `GET /shop/` | 200 | dark-mode script, Alpine CDN, `main.css` link |
-| 8 | Admin auth uniformity | unauth request to each admin route | table over all `/shop/admin/*` | 302 / 401 | browser → `/login`, JSON → 401 (§7.2); every route blocked |
-| 9 | CSRF token presence | state-changing forms | `GET` cart/checkout/admin forms | 200 | hidden `csrf_token` field present (§7.4) |
+| 8 | Admin auth uniformity | unauth request to each admin route | table over all `/shop/admin/*` | 302 / 401 | browser → `/login`, JSON → 401 (§7.6); every route blocked |
+| 9 | CSRF token presence | state-changing forms | `GET` cart/checkout/admin forms | 200 | hidden `csrf_token` field present (§7.5) |
 | 10 | Trailing slash | — | `GET /shop` | 301 | → `/shop/` (canonical group root, §12) |
 | 11 | Security headers | — | `GET` any page | 200 🚩 | consider CSP / `X-Content-Type-Options` |
 
@@ -1725,33 +1568,25 @@ Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ r
 
 ## 11. Phased milestones
 
-**Booking is being implemented first**, so the auth/identity shared infrastructure (§2.1) is *built*
-by booking during its Phase 0. The shop is **downstream**: its Phase 0 is verify-and-gap-fill, not
-build. (The DB and Valkey infrastructure already **landed on `master`** as standalone slices — §2.3
-and `internal/utils/valkey.go` — so they are not part of anyone's Phase 0.)
+All shared infrastructure — **auth/identity (PR #15)**, Postgres, Valkey — has **landed on `master`**,
+so the shop has no "build the foundation" phase. It only **consumes** the shared layer and wires the
+middleware onto its own routes.
 
-0. **Adopt & verify the shared auth infrastructure (built by booking; spec-owned by shop, §2.1).** Do
-   **not** rebuild it. Instead:
-   - Confirm each shared piece matches this spec: `User.Role` (`RoleCustomer`/`RoleAdmin`) +
-     `AdminMiddleware`; request-context `CurrentUser`; the shared `sid`/`OwnerRef` in the canonical
-     `user:`/`guest:` format (§7.1–7.3); app-wide CSRF + session hardening (§7.4–7.5), all under
-     `internal/server/authentication`. (DB + Valkey are already done — just consume them.)
-   - **Gap-fill** anything booking didn't need: e.g. add `User.Role`/`AdminMiddleware` if booking
-     gated admin differently; extend CSRF mounting to cover `/shop/*`.
-   - **Reconcile divergences** against the acceptance criteria in §2.1 — especially the `OwnerRef`
-     on-disk format, which booking sets first.
-   **Exit:** `CurrentUser`/`OwnerRef` are usable from a shop handler; a tokenless shop `POST` is
-   CSRF-rejected; the app boots on Postgres with the merged `AutoMigrate`.
+0. **Consume the shared auth layer (§7).** Import `internal/server/authentication`; mount `CSRF()` on
+   the shop group and `AdminMiddleware` on `/shop/admin/*`; register the `sm.*` models in the merged
+   `AutoMigrate`. **Exit:** `CurrentUser`/`OwnerRef` usable from a shop handler; a tokenless shop
+   `POST` is CSRF-rejected; `/shop/admin` gates correctly. (Raise the soft-auth gap, §7.8, so cart
+   ownership can move from raw `sid` to `OwnerRef`.)
 1. **Data + domain** — `sm.*` models on the merged `AutoMigrate`, `Catalog`, `Money`, `Slugify`, unit
    tests. No UI.
 2. **Storefront read path** — `/shop`, `/shop/products`, `/shop/products/{slug}`, category pages;
    templ views; nav entry. Seed a few products via a tiny CLI/seed to view it.
-3. **Cart** — `CartStore` (Valkey + DB fallback), keyed on the shared `sid`, add/update/remove, cart
-   page, count badge.
+3. **Cart** — `CartStore` (Valkey + DB fallback), keyed on the raw `sid` (→ `OwnerRef` once soft-auth
+   lands, §7.3), add/update/remove, cart page, count badge.
 4. **Checkout (mock)** — shipping form, `PlaceOrder`, cart-clear on success, confirmation page,
    `pending_payment` orders.
-5. **Admin CMS** — product CRUD, image upload, category CRUD, order list/detail/status (reusing the
-   Phase-0 `AdminMiddleware`).
+5. **Admin CMS** — product CRUD, image upload, category CRUD, order list/detail/status (behind the
+   shared `api_auth.AdminMiddleware`).
 6. **Polish** — pagination, search/filter, empty states, 404s, tests, Tailwind `@source`.
 
 Later / additive: real `PaymentProvider` (Stripe), S3 image store, multi-vendor (`ShopVendor` model +
@@ -1763,25 +1598,26 @@ per-vendor scoping and vendor admin), discounts/coupons, `shop_inventories` stoc
 
 **Cross-domain (reconciled with booking):** shop and booking **share one PostgreSQL database**; shop
 tables are prefixed `shop_*` (types `Shop*`, package `internal/shop/models`) disjoint from
-`booking_*`; the shop is **spec owner** of the shared auth/identity/session/CSRF/DB infrastructure
-(§2.1, §7, §2.3) and booking reuses it — one `User`, one `Role`, one `AdminMiddleware`, one
-`CurrentUser`/`sid`. **Build order: booking first** — booking builds these against the spec; the shop
-verifies + gap-fills (§11 Phase 0).
+`booking_*`. The shared auth/identity/session/CSRF layer **landed on `master` (PR #15)** in
+`internal/server/authentication`; the shop **consumes** it (§7) — one `User`, roles `user`/`admin`,
+one `AdminMiddleware`, one `CurrentUser`/`sid`/`OwnerRef`, one `CSRF`. The shop builds no auth of its
+own.
 
-> **⚠ Decide before booking codes it:** the **`OwnerRef` on-disk format**. Canonical (this plan) is
-> `user:<id>` / `guest:<sid>` (§7.3); booking's design doc shows a divergent `sess:abc`. Whoever
-> writes the `BookingHold`/`BookingOrder` rows first fixes the persisted format, so lock it **now**,
-> at the start of booking implementation. Recommendation: adopt the `user:`/`guest:` form (it encodes
-> auth state, which a bare `sess:` id does not) and update booking's examples to match.
+> **✅ Resolved — `OwnerRef` on-disk format.** The shared layer shipped `OwnerRef` as
+> `"user:<id>"` / `"guest:<sid>"`; this is now the **locked** persisted format for shop orders and
+> booking holds/orders alike (booking's earlier `sess:abc` examples are superseded).
 
-**Shop-only (locked per the reconciliation brief — each was a 🚩 in §10):**
+**Shop-only (locked — each was a 🚩 in §10):**
 
 | Question | Decision |
 |---|---|
-| Guest vs login-required checkout | **Guest allowed** (nullable `ShopOrder.UserID`; owner via `OwnerRef`). |
+| Guest vs login-required checkout | **Guest allowed**; owner is `OwnerRef` (`ShopOrder.OwnerRef`), `UserID` denormalized when authed. |
+| Cart ownership key | `OwnerRef` once soft-auth lands (§7.3/§7.8); **interim** raw `sid` to avoid a split cart. |
+| Guest cart on login | **Merge** the `guest:<sid>` cart into the `user:<id>` cart (§7.4). |
+| Roles | `user` / `admin` (`api_auth.RoleUser`/`RoleAdmin`) — generic, from the central layer. |
 | Launch currency | **Single-currency USD**; `Currency`/`PriceCents` already per-row for later. |
-| CMS auth failure mode | **Content-negotiated**: browsers → 302 `/login?next=…`; JSON → 401; logged-in non-admin → 403 (§7.2). |
-| Order-number IDOR (`GET /shop/orders/{number}`) | **Unguessable high-entropy `Number`** (`SecureToken()`, §7.3 — not the ~47-bit game id, since for guests it's the only guard); for authenticated buyers also scope by `UserID`. No enumeration. (A short human-friendly display code, if wanted, is a separate non-security field.) |
+| CMS auth failure mode | **Content-negotiated**: browsers → 302 `/login?next=…`; JSON → 401; logged-in non-admin → 403 (§7.6). |
+| Order-number IDOR (`GET /shop/orders/{number}`) | **Unguessable high-entropy `Number`** (`api_auth.SecureToken()`, §7.1 — not the ~47-bit game id, since for guests it's the only guard); for authenticated buyers also scope by `OwnerRef`. No enumeration. (A short human-friendly display code, if wanted, is a separate non-security field.) |
 | Slug collision (product/category) | **Auto-suffix** `-2`, `-3`, … in `Slugify` on conflict; slug stays `uniqueIndex`. |
 | Illegal order-status transition | **State-machine guard**: an allowed-transitions map; anything else → 400, status unchanged. |
 | Image upload validation | **≤10MB + `image/*` allow-list** (`hdr.Content-Type`, plus `http.DetectContentType` sniff), §8. |
