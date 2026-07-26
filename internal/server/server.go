@@ -92,15 +92,19 @@ func (s *backend) Routes() http.Handler {
 				auth.HandleFunc("GET /logout", api_auth.AuthLogout(s.context))
 			})
 
+			// Listing every account is an administrative capability, so this group
+			// runs behind AdminMiddleware rather than being publicly readable.
 			v1.Group("users", func(users *router.Router) {
 				users.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 					// return JSON response with all users
 
-					// get all users from the database
+					// get all users from the database. Credentials are never needed
+					// here, so they are left in the database rather than loaded and
+					// relied upon not to serialize.
 					var users []models.User
 
 					tx := s.context.DBConn.Session(&gorm.Session{Context: r.Context()})
-					tx.Find(&users)
+					tx.Omit("password").Find(&users)
 
 					// return JSON response
 					w.Header().Set("Content-Type", "application/json")
@@ -108,7 +112,7 @@ func (s *backend) Routes() http.Handler {
 
 					json.NewEncoder(w).Encode(users)
 				})
-			})
+			}, api_auth.AdminMiddleware(s.context))
 		})
 	})
 
