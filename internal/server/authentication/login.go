@@ -10,6 +10,7 @@ import (
 	"github.com/erancihan/clair/internal/database/models"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/web"
+	"github.com/erancihan/clair/internal/web/pages"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -20,7 +21,7 @@ import (
 func LoginPage(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		next := safeNext(r.URL.Query().Get("next"), "")
-		templ.Handler(web.Base("Clair", web.Login(next))).ServeHTTP(w, r)
+		templ.Handler(web.Base(PageShell(w, r, "Clair"), pages.LoginPage(next))).ServeHTTP(w, r)
 	}
 }
 
@@ -72,6 +73,11 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 			return
 		}
 
+		// Read the visitor's guest identity before the session is rewritten:
+		// once the session names the account, OwnerRef resolves to it and the
+		// reference their anonymous activity was recorded under is gone.
+		guestOwner := preLoginGuestRef(r)
+
 		// ---- create session ----
 		session, _ := store.Get(r, SESSION_NAME)
 		session.Values["authenticated"] = true
@@ -87,6 +93,13 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 		session.Options = sessionCookieOptions()
 
 		session.Save(r, w)
+
+		// Hand anything the visitor accumulated as a guest over to the account
+		// they just signed into. Domains register the migrators; this layer knows
+		// only the two owner references. Failures are logged and skipped — the
+		// login has already succeeded and must not be undone by a cart that
+		// would not move.
+		runGuestMigrators(ctx, r, guestOwner, userRef(user.ID))
 
 		// if the request is from API, return 200 OK (unchanged contract)
 		if isJSON {

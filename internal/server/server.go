@@ -15,6 +15,7 @@ import (
 	"github.com/erancihan/clair/internal/utils/middleware"
 	"github.com/erancihan/clair/internal/utils/router"
 	"github.com/erancihan/clair/internal/web"
+	"github.com/erancihan/clair/internal/web/pages"
 	"github.com/valkey-io/valkey-go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -41,21 +42,62 @@ func (s *backend) Server(port int) *http.Server {
 	}
 }
 
+// Routes builds the application's HTTP handler.
+//
+// Everything below the domain block is shared plumbing: static assets, the
+// health probe, the authentication endpoints and the handful of pages the site
+// itself owns. Domains are mounted one line each.
+//
+// That single line is the point. A domain package exposes
+//
+//	func Mount(r *router.Router, ctx server_context.BackEndContext)
+//
+// and owns its whole path space behind it - see internal/server/games/mount.go,
+// which is the reference implementation to copy. Adding, renaming or removing a
+// route is then a change inside a domain package, and this function stays a file
+// nobody has to contend over.
 func (s *backend) Routes() http.Handler {
 	mux := router.NewRouter()
 	mux.Use(middleware.Logger())
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			// return 404 page with 404 HTTP response
-			templ.Handler(web.Base("Cihan Eran", web.NotFound())).ServeHTTP(w, r)
-			return
-		}
+	// Static assets are served straight off the bare mux: they need none of the
+	// per-request work the application routes rely on.
+	s.mountStatic(mux)
 
-		templ.Handler(web.Base("Cihan Eran", web.Home())).ServeHTTP(w, r)
+	// Every application route resolves the caller's identity when there is one.
+	// This rejects nothing - AuthMiddleware and AdminMiddleware still do the
+	// enforcing - it just means CurrentUser, and therefore OwnerRef and the
+	// header's user menu, also work on routes open to anonymous visitors.
+	app := mux.Middleware(api_auth.OptionalAuthMiddleware(s.context))
+
+	s.mountAPI(app)
+	s.mountPages(app)
+
+	// ---- domains ----------------------------------------------------------
+	// One line per domain, and nothing else. Anything a domain needs beyond this
+	// line belongs in its own package.
+	games.Mount(app, s.context)
+
+	return mux
+}
+
+// mountStatic serves the embedded static assets and the public file directory.
+func (s *backend) mountStatic(mux *router.Router) {
+	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve static files from the embedded filesystem
+		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
 	})
+	mux.HandleFunc("GET /public/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve public files from the embedded filesystem
+		http.StripPrefix("/public/", http.FileServer(http.Dir(web.Public()))).ServeHTTP(w, r)
+	})
+}
 
-	mux.Group("api", func(api *router.Router) {
+// mountAPI registers the shared JSON API: the health probe, the authentication
+// endpoints and the administrative user listing. Domain APIs do not belong here;
+// a domain mounts its own under whatever prefix it owns.
+func (s *backend) mountAPI(app *router.Router) {
+	app.Group("api", func(api *router.Router) {
 		api.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 			// Valkey is optional; a degraded Valkey is not an outage, so the
 			// endpoint still reports 200 and surfaces the dependency status.
@@ -115,52 +157,31 @@ func (s *backend) Routes() http.Handler {
 			}, api_auth.AdminMiddleware(s.context))
 		})
 	})
+}
 
-	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve static files from the embedded filesystem
-		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
+// mountPages registers the pages the site itself owns, as opposed to the pages a
+// domain owns. Anything belonging to a domain goes in that domain's Mount.
+func (s *backend) mountPages(app *router.Router) {
+	app.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			// return 404 page with 404 HTTP response
+			templ.Handler(web.Base(api_auth.PageShell(w, r, "Cihan Eran"), pages.NotFound())).ServeHTTP(w, r)
+			return
+		}
+
+		templ.Handler(web.Base(api_auth.PageShell(w, r, "Cihan Eran"), pages.Home())).ServeHTTP(w, r)
 	})
-	mux.HandleFunc("GET /public/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve public files from the embedded filesystem
-		http.StripPrefix("/public/", http.FileServer(http.Dir(web.Public()))).ServeHTTP(w, r)
-	})
 
-	mux.HandleFunc("GET /login", api_auth.LoginPage(s.context))
+	app.HandleFunc("GET /login", api_auth.LoginPage(s.context))
 
-	mux.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
 		api_auth.AuthLogout(s.context).ServeHTTP(w, r)
 		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 
-	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
+	app.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
 
-	mux.Group("games", func(gamesRoute *router.Router) {
-		gamesRoute.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-			templ.Handler(web.Base("Games", web.Games())).ServeHTTP(w, r)
-		})
-
-		gamesRoute.Group("tic-tac-toe", func(route *router.Router) {
-			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base("Tic-Tac-Toe", web.TicTacToe())).ServeHTTP(w, r)
-			})
-			route.HandleFunc("POST /create", games.TicTacToe.CreateGame(s.context))
-			route.HandleFunc("GET /stream", games.TicTacToe.StreamGame(s.context))
-			route.HandleFunc("POST /move", games.TicTacToe.TakeAction(s.context))
-		})
-
-		gamesRoute.Group("chess", func(route *router.Router) {
-			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base("Chess", web.Chess())).ServeHTTP(w, r)
-			})
-			route.HandleFunc("POST /create", games.Chess.CreateGame(s.context))
-			route.HandleFunc("GET /stream", games.Chess.StreamGame(s.context))
-			route.HandleFunc("POST /move", games.Chess.TakeAction(s.context))
-		})
+	app.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
+		templ.Handler(pages.RequesterPage()).ServeHTTP(w, r)
 	})
-
-	mux.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
-		templ.Handler(web.Requester()).ServeHTTP(w, r)
-	})
-
-	return mux
 }

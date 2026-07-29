@@ -42,6 +42,29 @@ func CSRFToken(r *http.Request) string {
 	return token
 }
 
+// ensureCSRFToken returns the caller's session-bound CSRF token, persisting a
+// freshly minted one to the session cookie before returning it.
+//
+// This is what CSRFToken cannot do on its own: CSRFToken only writes into the
+// per-request session values, so a token it minted never reaches the browser
+// unless something else saves the session. A token published in a page that was
+// never persisted would fail the very check it exists to pass. Callers must
+// therefore call this before writing any part of the response body.
+func ensureCSRFToken(w http.ResponseWriter, r *http.Request) string {
+	session, _ := store.Get(r, SESSION_NAME)
+
+	if token, ok := session.Values[csrfSessionField].(string); ok && token != "" {
+		return token
+	}
+
+	token := SecureToken()
+	session.Values[csrfSessionField] = token
+	session.Options = sessionCookieOptions()
+	_ = session.Save(r, w)
+
+	return token
+}
+
 // CSRF returns middleware that protects state-changing requests against
 // cross-site request forgery. Safe methods (GET/HEAD/OPTIONS/TRACE) pass through,
 // but first ensure a session-bound token exists and is persisted so forms and API

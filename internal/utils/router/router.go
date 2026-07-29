@@ -33,7 +33,7 @@ func (r *Router) Group(prefix string, fn func(*Router), middlewares ...Middlewar
 	// but has its own prefix and middleware stack.
 	newGroup := &Router{
 		mux:         r.mux,
-		middlewares: append(r.middlewares, middlewares...), // Inherit parent middleware + add new ones
+		middlewares: r.chain(middlewares...), // Inherit parent middleware + add new ones
 		prefix:      r.joinPaths(r.prefix, prefix),
 	}
 
@@ -43,9 +43,25 @@ func (r *Router) Group(prefix string, fn func(*Router), middlewares ...Middlewar
 func (r *Router) Middleware(middlewares ...Middleware) *Router {
 	return &Router{
 		mux:         r.mux,
-		middlewares: append(r.middlewares, middlewares...), // Inherit parent middleware + add new ones
+		middlewares: r.chain(middlewares...), // Inherit parent middleware + add new ones
 		prefix:      r.prefix,
 	}
+}
+
+// chain returns this router's middleware stack followed by extra, always in
+// freshly allocated storage.
+//
+// The allocation is the point: appending straight onto r.middlewares reuses that
+// slice's spare capacity, so two sub-routers derived from the same parent would
+// write their own middleware into the same array slot and silently inherit each
+// other's. That is invisible until a second sub-router is derived from a parent
+// that has spare capacity — exactly what happens once several domains mount
+// their own groups off a shared router.
+func (r *Router) chain(extra ...Middleware) []Middleware {
+	chained := make([]Middleware, 0, len(r.middlewares)+len(extra))
+	chained = append(chained, r.middlewares...)
+
+	return append(chained, extra...)
 }
 
 func (r *Router) Handle(method, path string, handler http.HandlerFunc) {

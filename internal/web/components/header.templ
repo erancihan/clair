@@ -13,12 +13,19 @@ templ NavItem(href string, isActive bool, label string) {
 </li>
 }
 
+// navItems renders every entry of NavLinks. Both navigation renderers below use
+// it, so the link list exists exactly once — see components/nav.go.
+templ navItems() {
+    for _, link := range NavLinks {
+        @NavItem(link.Href, false, link.Label)
+    }
+}
+
 templ desktopNavigation() {
 <nav class="pointer-events-auto hidden md:block">
     <ul
         class="flex rounded-full bg-white/90 px-3 text-sm font-medium text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur dark:bg-zinc-800/90 dark:text-zinc-200 dark:ring-white/10">
-        @NavItem("/", false, "Home")
-        @NavItem("/games", false, "Games")
+        @navItems()
     </ul>
 </nav>
 }
@@ -27,13 +34,45 @@ templ mobileNavigation() {
 <nav class="pointer-events-auto block md:hidden">
     <ul
         class="flex rounded-full bg-white/90 px-3 text-sm font-medium text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur dark:bg-zinc-800/90 dark:text-zinc-200 dark:ring-white/10">
-        @NavItem("/", false, "Home")
-        @NavItem("/games", false, "Games")
+        @navItems()
     </ul>
 </nav>
 }
 
-templ Header() {
+// userMenu renders the account slot on the right of the header: a menu for a
+// signed-in visitor, or a sign-in link when there is no identity for the request.
+templ userMenu(user *SessionUser) {
+<div class="pointer-events-auto">
+    if user == nil {
+    <a href="/login"
+        class="flex items-center rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur transition hover:text-teal-500 dark:bg-zinc-800/90 dark:text-zinc-200 dark:ring-white/10 dark:hover:text-teal-400">
+        Sign in
+    </a>
+    } else {
+    <div x-data="{ open: false }" class="relative">
+        <button type="button" @click="open = !open" @keydown.escape="open = false" :aria-expanded="open"
+            aria-haspopup="menu"
+            class="flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 text-sm font-medium text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur transition hover:text-teal-500 dark:bg-zinc-800/90 dark:text-zinc-200 dark:ring-white/10 dark:hover:text-teal-400">
+            Account
+            <svg viewBox="0 0 8 6" aria-hidden="true" class="h-2 w-2 stroke-zinc-500 dark:stroke-zinc-400">
+                <path d="M1.75 1.75 4 4.25l2.25-2.5" fill="none" stroke-width="1.5" stroke-linecap="round"
+                    stroke-linejoin="round" />
+            </svg>
+        </button>
+        <div x-show="open" @click.outside="open = false" style="display: none" role="menu"
+            class="absolute right-0 mt-2 w-44 origin-top-right rounded-2xl bg-white/95 py-2 text-sm text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur dark:bg-zinc-800/95 dark:text-zinc-200 dark:ring-white/10">
+            <p class="px-4 pb-1 text-xs uppercase tracking-wide text-zinc-400 dark:text-zinc-500">{ user.Role }</p>
+            <a href="/dashboard" role="menuitem"
+                class="block px-4 py-2 transition hover:text-teal-500 dark:hover:text-teal-400">Dashboard</a>
+            <a href="/logout" role="menuitem"
+                class="block px-4 py-2 transition hover:text-teal-500 dark:hover:text-teal-400">Sign out</a>
+        </div>
+    </div>
+    }
+</div>
+}
+
+templ Header(user *SessionUser) {
 <header class="pointer-events-none relative z-50 flex flex-col">
     <div class="top-0 z-10 h-16 pt-6">
         <div
@@ -44,6 +83,9 @@ templ Header() {
                         @desktopNavigation()
                         @mobileNavigation()
                     </div>
+                </div>
+                <div class="flex justify-end md:flex-1">
+                    @userMenu(user)
                 </div>
             </div>
         </div>
