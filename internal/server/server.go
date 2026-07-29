@@ -9,6 +9,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/erancihan/clair/internal/database/models"
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
+	"github.com/erancihan/clair/internal/server/booking"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/server/games"
 	"github.com/erancihan/clair/internal/utils"
@@ -77,6 +78,7 @@ func (s *backend) Routes() http.Handler {
 	// One line per domain, and nothing else. Anything a domain needs beyond this
 	// line belongs in its own package.
 	games.Mount(app, s.context)
+	booking.Mount(app, s.context)
 
 	return mux
 }
