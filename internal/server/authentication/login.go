@@ -10,6 +10,7 @@ import (
 	"github.com/erancihan/clair/internal/database/models"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/web"
+	"github.com/erancihan/clair/internal/web/pages"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -20,7 +21,7 @@ import (
 func LoginPage(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		next := safeNext(r.URL.Query().Get("next"), "")
-		templ.Handler(web.Base("Clair", web.Login(next))).ServeHTTP(w, r)
+		templ.Handler(web.Base("Clair", pages.LoginPage(next))).ServeHTTP(w, r)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/erancihan/clair/internal/utils/middleware"
 	"github.com/erancihan/clair/internal/utils/router"
 	"github.com/erancihan/clair/internal/web"
+	"github.com/erancihan/clair/internal/web/pages"
 	"github.com/valkey-io/valkey-go"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -48,11 +49,11 @@ func (s *backend) Routes() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			// return 404 page with 404 HTTP response
-			templ.Handler(web.Base("Cihan Eran", web.NotFound())).ServeHTTP(w, r)
+			templ.Handler(web.Base("Cihan Eran", pages.NotFound())).ServeHTTP(w, r)
 			return
 		}
 
-		templ.Handler(web.Base("Cihan Eran", web.Home())).ServeHTTP(w, r)
+		templ.Handler(web.Base("Cihan Eran", pages.Home())).ServeHTTP(w, r)
 	})
 
 	mux.Group("api", func(api *router.Router) {
@@ -136,12 +137,12 @@ func (s *backend) Routes() http.Handler {
 
 	mux.Group("games", func(gamesRoute *router.Router) {
 		gamesRoute.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-			templ.Handler(web.Base("Games", web.Games())).ServeHTTP(w, r)
+			templ.Handler(web.Base("Games", pages.Games())).ServeHTTP(w, r)
 		})
 
 		gamesRoute.Group("tic-tac-toe", func(route *router.Router) {
 			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base("Tic-Tac-Toe", web.TicTacToe())).ServeHTTP(w, r)
+				templ.Handler(web.Base("Tic-Tac-Toe", pages.TicTacToe())).ServeHTTP(w, r)
 			})
 			route.HandleFunc("POST /create", games.TicTacToe.CreateGame(s.context))
 			route.HandleFunc("GET /stream", games.TicTacToe.StreamGame(s.context))
@@ -150,7 +151,7 @@ func (s *backend) Routes() http.Handler {
 
 		gamesRoute.Group("chess", func(route *router.Router) {
 			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base("Chess", web.Chess())).ServeHTTP(w, r)
+				templ.Handler(web.Base("Chess", pages.Chess())).ServeHTTP(w, r)
 			})
 			route.HandleFunc("POST /create", games.Chess.CreateGame(s.context))
 			route.HandleFunc("GET /stream", games.Chess.StreamGame(s.context))
@@ -159,7 +160,7 @@ func (s *backend) Routes() http.Handler {
 	})
 
 	mux.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
-		templ.Handler(web.Requester()).ServeHTTP(w, r)
+		templ.Handler(pages.RequesterPage()).ServeHTTP(w, r)
 	})
 
 	return mux
