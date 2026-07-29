@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/erancihan/clair/internal/database"
 	"github.com/erancihan/clair/internal/database/models"
 	authentication "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
@@ -18,8 +19,8 @@ import (
 )
 
 // newAuthTestDB opens a gorm connection to the test Postgres database and resets
-// the users table (drop + AutoMigrate) so each auth test starts from a clean
-// schema that includes the Role column.
+// the whole app schema (drop + AutoMigrate over the migration set) so each auth
+// test starts from a clean schema that includes the Role column.
 func newAuthTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -33,11 +34,10 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to connect to test database at %s: %v", dsn, err)
 	}
 
-	if err := db.Migrator().DropTable(&models.User{}); err != nil {
-		t.Fatalf("failed to drop users table: %v", err)
-	}
-	if err := db.AutoMigrate(&models.User{}); err != nil {
-		t.Fatalf("failed to migrate users table: %v", err)
+	dropAppTables(t, db)
+
+	if err := db.AutoMigrate(database.MigrationModels()...); err != nil {
+		t.Fatalf("failed to migrate the test schema: %v", err)
 	}
 
 	return db

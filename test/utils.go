@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/erancihan/clair/internal/cmd"
-	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/database"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -88,8 +88,24 @@ func resetTestDatabase(t *testing.T, dsn string) {
 	}
 	defer sqlDB.Close()
 
-	if err := db.Migrator().DropTable(&models.User{}); err != nil {
-		t.Fatalf("failed to reset test database: %v", err)
+	dropAppTables(t, db)
+}
+
+// dropAppTables drops every table under migration, newest domain first.
+//
+// It reads the migration set from internal/database rather than naming models,
+// so a domain that adds a table gets it reset here for free - no edit to this
+// fixture, which every domain would otherwise have to make.
+func dropAppTables(t *testing.T, db *gorm.DB) {
+	t.Helper()
+
+	// Drop in reverse: domain tables may carry foreign keys onto the shared
+	// identity table, and a referenced table cannot be dropped first.
+	appModels := database.MigrationModels()
+	for i := len(appModels) - 1; i >= 0; i-- {
+		if err := db.Migrator().DropTable(appModels[i]); err != nil {
+			t.Fatalf("failed to reset test database: %v", err)
+		}
 	}
 }
 

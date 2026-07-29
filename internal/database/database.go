@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/server/games"
 	"github.com/erancihan/clair/internal/utils"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -50,9 +51,34 @@ func New(ctx context.Context) (*gorm.DB, error) {
 	zapLogger.Info("Connected to PostgreSQL database")
 
 	// register models here
-	if err := db.AutoMigrate(&models.User{}); err != nil {
+	if err := db.AutoMigrate(MigrationModels()...); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
 	return db, nil
+}
+
+// MigrationModels is the full set of models AutoMigrate manages: the shared
+// identity model, plus one Models() call per domain.
+//
+// Domains own their own list, so putting a table under migration is a change in
+// the domain package and a single line here - never an edit to the AutoMigrate
+// call itself, which is what would otherwise make three domains contend over one
+// statement.
+//
+// The dependency runs database -> domains -> authentication. Domain packages may
+// import the authentication layer; nothing imports internal/database, which is
+// what keeps this direction free of cycles. Domain models themselves live in
+// internal/database/models, one file per model, domain-prefixed.
+func MigrationModels() []any {
+	all := []any{
+		// Owned by the shared authentication layer.
+		&models.User{},
+	}
+
+	// ---- domains ----------------------------------------------------------
+	// One line per domain.
+	all = append(all, games.Models()...)
+
+	return all
 }
