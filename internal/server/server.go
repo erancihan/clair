@@ -46,17 +46,34 @@ func (s *backend) Routes() http.Handler {
 	mux := router.NewRouter()
 	mux.Use(middleware.Logger())
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// Static assets are served straight off the bare mux: they need none of the
+	// per-request work the application routes below rely on.
+	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve static files from the embedded filesystem
+		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
+	})
+	mux.HandleFunc("GET /public/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve public files from the embedded filesystem
+		http.StripPrefix("/public/", http.FileServer(http.Dir(web.Public()))).ServeHTTP(w, r)
+	})
+
+	// Every application route resolves the caller's identity when there is one.
+	// This rejects nothing - AuthMiddleware and AdminMiddleware still do the
+	// enforcing - it just means CurrentUser, and therefore OwnerRef and the
+	// header's user menu, also work on routes open to anonymous visitors.
+	app := mux.Middleware(api_auth.OptionalAuthMiddleware(s.context))
+
+	app.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			// return 404 page with 404 HTTP response
-			templ.Handler(web.Base("Cihan Eran", pages.NotFound())).ServeHTTP(w, r)
+			templ.Handler(web.Base(api_auth.PageShell(w, r, "Cihan Eran"), pages.NotFound())).ServeHTTP(w, r)
 			return
 		}
 
-		templ.Handler(web.Base("Cihan Eran", pages.Home())).ServeHTTP(w, r)
+		templ.Handler(web.Base(api_auth.PageShell(w, r, "Cihan Eran"), pages.Home())).ServeHTTP(w, r)
 	})
 
-	mux.Group("api", func(api *router.Router) {
+	app.Group("api", func(api *router.Router) {
 		api.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 			// Valkey is optional; a degraded Valkey is not an outage, so the
 			// endpoint still reports 200 and surfaces the dependency status.
@@ -117,32 +134,23 @@ func (s *backend) Routes() http.Handler {
 		})
 	})
 
-	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve static files from the embedded filesystem
-		http.FileServer(http.FS(web.Static)).ServeHTTP(w, r)
-	})
-	mux.HandleFunc("GET /public/", func(w http.ResponseWriter, r *http.Request) {
-		// Serve public files from the embedded filesystem
-		http.StripPrefix("/public/", http.FileServer(http.Dir(web.Public()))).ServeHTTP(w, r)
-	})
+	app.HandleFunc("GET /login", api_auth.LoginPage(s.context))
 
-	mux.HandleFunc("GET /login", api_auth.LoginPage(s.context))
-
-	mux.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
 		api_auth.AuthLogout(s.context).ServeHTTP(w, r)
 		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 
-	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
+	app.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
 
-	mux.Group("games", func(gamesRoute *router.Router) {
+	app.Group("games", func(gamesRoute *router.Router) {
 		gamesRoute.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-			templ.Handler(web.Base("Games", pages.Games())).ServeHTTP(w, r)
+			templ.Handler(web.Base(api_auth.PageShell(w, r, "Games"), pages.Games())).ServeHTTP(w, r)
 		})
 
 		gamesRoute.Group("tic-tac-toe", func(route *router.Router) {
 			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base("Tic-Tac-Toe", pages.TicTacToe())).ServeHTTP(w, r)
+				templ.Handler(web.Base(api_auth.PageShell(w, r, "Tic-Tac-Toe"), pages.TicTacToe())).ServeHTTP(w, r)
 			})
 			route.HandleFunc("POST /create", games.TicTacToe.CreateGame(s.context))
 			route.HandleFunc("GET /stream", games.TicTacToe.StreamGame(s.context))
@@ -151,7 +159,7 @@ func (s *backend) Routes() http.Handler {
 
 		gamesRoute.Group("chess", func(route *router.Router) {
 			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base("Chess", pages.Chess())).ServeHTTP(w, r)
+				templ.Handler(web.Base(api_auth.PageShell(w, r, "Chess"), pages.Chess())).ServeHTTP(w, r)
 			})
 			route.HandleFunc("POST /create", games.Chess.CreateGame(s.context))
 			route.HandleFunc("GET /stream", games.Chess.StreamGame(s.context))
@@ -159,7 +167,7 @@ func (s *backend) Routes() http.Handler {
 		})
 	})
 
-	mux.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
 		templ.Handler(pages.RequesterPage()).ServeHTTP(w, r)
 	})
 

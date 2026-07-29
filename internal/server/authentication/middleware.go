@@ -18,6 +18,15 @@ import (
 func AuthMiddleware(ctx server_context.BackEndContext) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// An upstream OptionalAuthMiddleware may already have resolved this
+			// request's identity. Only this package can put one in the context
+			// (the key is unexported), so reusing it is safe and saves a second
+			// database round trip on every authenticated request.
+			if _, ok := CurrentUser(r.Context()); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			identity, ok := authenticate(ctx, r)
 			if !ok {
 				unauthorized(w, r)
@@ -25,6 +34,28 @@ func AuthMiddleware(ctx server_context.BackEndContext) func(http.Handler) http.H
 			}
 
 			r = r.WithContext(context.WithValue(r.Context(), identityContextKey, identity))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// OptionalAuthMiddleware resolves the caller's Identity when there is one and
+// injects it into the request context, but never rejects a request. Enforcement
+// stays with AuthMiddleware and AdminMiddleware.
+//
+// It exists because CurrentUser — and therefore OwnerRef and the header's user
+// menu — is blind outside AuthMiddleware: on a route open to anonymous visitors,
+// a signed-in visitor is indistinguishable from a guest and OwnerRef hands back
+// "guest:<sid>" for someone who has an account. Every domain with a public
+// surface that must still follow the account (a cart, a hold, a nav menu) needs
+// this, so it belongs here rather than being reinvented three times.
+func OptionalAuthMiddleware(ctx server_context.BackEndContext) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if identity, ok := authenticate(ctx, r); ok {
+				r = r.WithContext(context.WithValue(r.Context(), identityContextKey, identity))
+			}
+
 			next.ServeHTTP(w, r)
 		})
 	}

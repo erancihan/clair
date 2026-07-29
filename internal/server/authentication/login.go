@@ -21,7 +21,7 @@ import (
 func LoginPage(ctx server_context.BackEndContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		next := safeNext(r.URL.Query().Get("next"), "")
-		templ.Handler(web.Base("Clair", pages.LoginPage(next))).ServeHTTP(w, r)
+		templ.Handler(web.Base(PageShell(w, r, "Clair"), pages.LoginPage(next))).ServeHTTP(w, r)
 	}
 }
 
