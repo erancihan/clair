@@ -73,7 +73,19 @@ func SessionID(w http.ResponseWriter, r *http.Request) string {
 // route whose ownership should follow the account must run behind it.
 func OwnerRef(w http.ResponseWriter, r *http.Request) string {
 	if identity, ok := CurrentUser(r.Context()); ok {
-		return fmt.Sprintf("user:%d", identity.UserID)
+		return userRef(identity.UserID)
 	}
-	return "guest:" + SessionID(w, r)
+	return guestRef(SessionID(w, r))
+}
+
+// userRef and guestRef build the two halves of the owner reference format. They
+// exist so the format is written down once: it is persisted by domains and handed
+// to guest migrators, so a second spelling of it anywhere would be a silent data
+// bug rather than a compile error.
+func userRef(userID uint) string {
+	return fmt.Sprintf("user:%d", userID)
+}
+
+func guestRef(sessionID string) string {
+	return "guest:" + sessionID
 }

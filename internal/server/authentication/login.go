@@ -73,6 +73,11 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 			return
 		}
 
+		// Read the visitor's guest identity before the session is rewritten:
+		// once the session names the account, OwnerRef resolves to it and the
+		// reference their anonymous activity was recorded under is gone.
+		guestOwner := preLoginGuestRef(r)
+
 		// ---- create session ----
 		session, _ := store.Get(r, SESSION_NAME)
 		session.Values["authenticated"] = true
@@ -88,6 +93,13 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 		session.Options = sessionCookieOptions()
 
 		session.Save(r, w)
+
+		// Hand anything the visitor accumulated as a guest over to the account
+		// they just signed into. Domains register the migrators; this layer knows
+		// only the two owner references. Failures are logged and skipped — the
+		// login has already succeeded and must not be undone by a cart that
+		// would not move.
+		runGuestMigrators(ctx, r, guestOwner, userRef(user.ID))
 
 		// if the request is from API, return 200 OK (unchanged contract)
 		if isJSON {
