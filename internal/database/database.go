@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/server/booking"
 	"github.com/erancihan/clair/internal/server/games"
 	"github.com/erancihan/clair/internal/utils"
 	"gorm.io/driver/postgres"
@@ -79,6 +80,7 @@ func MigrationModels() []any {
 	// ---- domains ----------------------------------------------------------
 	// One line per domain.
 	all = append(all, games.Models()...)
+	all = append(all, booking.Models()...)
 
 	return all
 }
