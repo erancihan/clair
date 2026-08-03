@@ -738,3 +738,45 @@ func TestNewGameFromFEN(t *testing.T) {
 		t.Error("expected an error for an invalid FEN")
 	}
 }
+
+// --- Phase 3: owner attribution --------------------------------------------
+
+func TestJoinAsAttributesSeatsToOwners(t *testing.T) {
+	g, id := NewGame(TypePvP)
+
+	if seat, _ := g.JoinAs("guest:alice"); seat != "white" {
+		t.Fatalf("first join should be white, got %q", seat)
+	}
+	if seat, _ := g.JoinAs("user:7"); seat != "black" {
+		t.Fatalf("second join should be black, got %q", seat)
+	}
+	g.mu.Lock()
+	g.stopClockLocked()
+	g.mu.Unlock()
+
+	white := GamesForOwner("guest:alice")
+	if len(white) != 1 || white[0].GameID != id || white[0].Color != "white" {
+		t.Fatalf("alice should hold the white seat in %s, got %+v", id, white)
+	}
+	if white[0].Token == "" {
+		t.Error("an owned game should carry its seat token so play can resume")
+	}
+
+	black := GamesForOwner("user:7")
+	if len(black) != 1 || black[0].Color != "black" {
+		t.Fatalf("user:7 should hold the black seat, got %+v", black)
+	}
+
+	if got := GamesForOwner("guest:mallory"); len(got) != 0 {
+		t.Errorf("an unrelated owner should hold no seats, got %+v", got)
+	}
+}
+
+func TestGamesForOwnerIgnoresUnattributedSeats(t *testing.T) {
+	g, _ := NewGame(TypePvP)
+	g.Join() // plain Join records no owner
+
+	if got := GamesForOwner(""); got != nil {
+		t.Errorf("an empty owner reference must match nothing, got %+v", got)
+	}
+}

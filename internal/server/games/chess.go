@@ -6,12 +6,13 @@ import (
 	"net/http"
 
 	game "github.com/erancihan/clair/internal/games/chess"
+	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
 )
 
 // StartChessCleanup launches the background janitor that evicts finished and
-// abandoned chess games. It is wired from server startup with the server's
-// context.
+// abandoned chess games. It is wired from mountChess, and is safe to call more
+// than once - only the first call starts the loop.
 func StartChessCleanup(ctx context.Context) {
 	game.StartCleanup(ctx)
 }
@@ -54,7 +55,10 @@ func (s *chessService) CreateGame(ctx server_context.BackEndContext) http.Handle
 		} else {
 			instance, id = game.NewGame(gType)
 		}
-		seat, token := instance.Join() // the creator takes the white seat
+		// The creator takes the white seat, attributed to whoever they are: a real
+		// account when signed in, otherwise the stable guest reference behind the
+		// sid cookie. Either way play needs no login.
+		seat, token := instance.JoinAs(api_auth.OwnerRef(w, r))
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -87,7 +91,7 @@ func (s *chessService) JoinGame(ctx server_context.BackEndContext) http.HandlerF
 			return
 		}
 
-		seat, token := instance.Join()
+		seat, token := instance.JoinAs(api_auth.OwnerRef(w, r))
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -225,6 +229,30 @@ func (s *chessService) OpenGames(ctx server_context.BackEndContext) http.Handler
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"games": game.ListOpenGames(),
+		})
+	}
+}
+
+// MyGames lists the live games the caller holds a seat in, so a player who still
+// has their cookie but has lost their local copy of a seat token can pick a game
+// back up. Anonymous visitors are matched on their guest reference, signed-in
+// ones on their account, so this works either way and needs no login.
+//
+// "ephemeral": true is part of the response on purpose. Chess keeps its games in
+// memory, so this lists what this process is holding right now - not history. It
+// comes back empty after a restart and does not see another instance's games.
+// Making it durable means giving the games domain real tables (games.Models()),
+// which is a separate piece of work.
+func (s *chessService) MyGames(ctx server_context.BackEndContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// The response carries seat tokens, so it must stay same-origin: no CORS
+		// header here, unlike the SSE stream.
+		owner := api_auth.OwnerRef(w, r)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"games":     game.GamesForOwner(owner),
+			"ephemeral": true,
 		})
 	}
 }

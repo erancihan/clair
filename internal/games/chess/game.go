@@ -76,6 +76,14 @@ type Game struct {
 	whiteToken string
 	blackToken string
 
+	// Owner references for the two seats, in the "user:<id>" / "guest:<sid>" form
+	// the authentication layer produces. These attribute a seat to a visitor so
+	// they can find their way back to it; they are NOT a credential. Moving still
+	// requires the seat token above, because an owner reference is derived from a
+	// cookie the browser sends on its own.
+	whiteOwner string
+	blackOwner string
+
 	lastActivity  time.Time   // last state change or client connect/disconnect
 	turnStartedAt time.Time   // when the current side's clock started running
 	timer         *time.Timer // fires when the side to move runs out of time
@@ -88,17 +96,28 @@ const (
 	agentThinkDelay = 400 * time.Millisecond
 )
 
-// Join assigns the caller to the next open seat and returns the seat name
+// Join assigns the caller to the next open seat without recording who they are.
+// It is equivalent to JoinAs with an empty owner reference.
+func (g *Game) Join() (seat string, token string) {
+	return g.JoinAs("")
+}
+
+// JoinAs assigns the caller to the next open seat and returns the seat name
 // ("white", "black" or "spectator") together with its secret token ("" for a
 // spectator). When the second player takes the black seat, a waiting PvP game
 // starts.
-func (g *Game) Join() (seat string, token string) {
+//
+// owner is the caller's owner reference from the authentication layer, recorded
+// against the seat so GamesForOwner can find it again. Pass "" to leave the seat
+// unattributed; that is the only difference from Join.
+func (g *Game) JoinAs(owner string) (seat string, token string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	switch {
 	case g.whiteToken == "":
 		g.whiteToken = utils.GenerateToken()
+		g.whiteOwner = owner
 		// In a game against the AI the human takes white and play begins at once.
 		if g.State.GameType == TypeAgent && g.State.Status == StatusWaiting {
 			g.State.Status = StatusOngoing
@@ -108,6 +127,7 @@ func (g *Game) Join() (seat string, token string) {
 		return "white", g.whiteToken
 	case g.blackToken == "":
 		g.blackToken = utils.GenerateToken()
+		g.blackOwner = owner
 		if g.State.GameType == TypePvP && g.State.Status == StatusWaiting {
 			g.State.Status = StatusOngoing
 			g.startClockLocked()
@@ -203,6 +223,65 @@ func ListOpenGames() []string {
 		g.mu.Unlock()
 		if open {
 			out = append(out, key.(string))
+		}
+		return true
+	})
+	return out
+}
+
+// OwnedGame is one live game a visitor holds a seat in, as returned by
+// GamesForOwner.
+//
+// Token is the seat's secret, handed back so the owner can resume play after
+// losing their local copy of it. That is safe only because an owner reference is
+// resolved from the caller's own cookies and the response is same-origin: never
+// serve this shape with a permissive CORS header.
+type OwnedGame struct {
+	GameID string   `json:"game_id"`
+	Color  string   `json:"color"`
+	Token  string   `json:"token"`
+	Status Status   `json:"status"`
+	Type   GameType `json:"type"`
+	Turn   Color    `json:"turn"`
+}
+
+// GamesForOwner returns the live games in which owner holds a seat.
+//
+// The result is drawn from the in-memory store, so it covers only games this
+// process is currently holding: it is empty after a restart, it does not see
+// games served by another instance, and the janitor drops finished and abandoned
+// games from it on the usual schedule. It is a "where was I?" lookup, not game
+// history. An empty owner reference matches nothing, so unattributed seats stay
+// unreachable through it.
+func GamesForOwner(owner string) []OwnedGame {
+	if owner == "" {
+		return nil
+	}
+
+	out := []OwnedGame{}
+	games.Range(func(key, value any) bool {
+		g := value.(*Game)
+
+		g.mu.Lock()
+		var color, token string
+		switch owner {
+		case g.whiteOwner:
+			color, token = "white", g.whiteToken
+		case g.blackOwner:
+			color, token = "black", g.blackToken
+		}
+		status, gType, turn := g.State.Status, g.State.GameType, g.State.Turn
+		g.mu.Unlock()
+
+		if color != "" {
+			out = append(out, OwnedGame{
+				GameID: key.(string),
+				Color:  color,
+				Token:  token,
+				Status: status,
+				Type:   gType,
+				Turn:   turn,
+			})
 		}
 		return true
 	})
