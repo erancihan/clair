@@ -47,18 +47,21 @@ Validation: standard perft positions pass to reference counts — start position
 to depth 5, Kiwipete (castling) to depth 4 = 4,085,603, Position 3 (en passant /
 pins), Position 5 (promotion) — plus per-rule unit tests.
 
-## Phase 2 — Session & platform robustness ✅ done
+## Phase 2 — Session & platform robustness ⚠️ partly done
 
-Goal: trustworthy multiplayer that survives restarts and abuse.
+Goal: trustworthy multiplayer that survives restarts and abuse. Everything here
+landed except persistence, so games are still lost on restart.
 
 - [x] Bind the white/black seat to a secret token (the server no longer trusts
       the client-asserted color); a `/join` endpoint assigns seats; read-only
       spectators; token-based reconnection survives refresh.
 - [x] Game lifecycle: a background janitor evicts finished (10 min) and abandoned
       (30 min, no clients) games from the in-memory store, fixing the leak.
-- [x] Persistence: games (board FEN, clocks, tokens, SAN moves) are written
-      through to SQLite via GORM and in-progress games are reloaded on startup;
-      move history / PGN shipped separately.
+- [ ] Persistence: **not done.** An earlier SQLite write-through was reverted,
+      and the database is PostgreSQL-only now, so games live in a `sync.Map` and
+      do not survive a restart. Reinstating it means filling in the games
+      domain's `Models()`, which the mount seam left empty for exactly this. Move
+      history / PGN shipped separately and are unaffected.
 - [x] Turn clocks (10 min/side) in `GameState`, charged per move with a
       server-side timer that auto-forfeits on flag; the client interpolates the
       running clock between updates.
@@ -78,10 +81,18 @@ Goal: it feels like a real chess site.
 - [x] FEN & PGN **export** (Board.FEN, the `/pgn` endpoint) and FEN **import**
       (start a game from any position). PGN import (needs a SAN parser) is still
       open, as are optional drag-and-drop and move sounds.
+- [x] Identity: seats are attributed to an owner reference (`user:<id>` when
+      signed in, `guest:<sid>` otherwise) and `GET /mine` lists a player's live
+      games so they can resume one. Play stays anonymous — no route requires a
+      login. See `internal/games/chess/README.md` for the full policy, including
+      why CSRF is deferred and what will reverse that.
 
 ## Phase 4 — Stretch
 
-- [ ] Account-linked game history, Elo / ratings.
+- [ ] Persist games (fills `games.Models()`); unblocks the two items below and
+      lets a guest's games follow them to their account via `GuestMigrator`.
+- [ ] Account-linked game history, Elo / ratings — the first feature that will
+      require a real account rather than a guest reference.
 - [ ] Opening-book hints, analysis mode.
 - [ ] Tournaments / brackets.
 
