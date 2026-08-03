@@ -277,9 +277,37 @@ templ Chess() {
                                             return;
                                         } catch (e) { /* fall through to a fresh join */ }
                                     }
-                                    this.joinId = id;
-                                    this.joinGame();
+                                    // Our local copy is gone. The server still attributes seats
+                                    // to this browser, so ask whether we already hold one here:
+                                    // a plain join would drop us into the spectator seat.
+                                    this.restoreSeat(id);
                                 }
+                            },
+
+                            // restoreSeat recovers a seat this browser already holds, using the
+                            // server's owner attribution rather than local storage. Falls back to
+                            // joining fresh when we hold no seat in this game.
+                            async restoreSeat(id) {
+                                try {
+                                    const res = await fetch('/games/chess/mine', {
+                                        headers: { 'Accept': 'application/json' }
+                                    });
+                                    if (res.ok) {
+                                        const data = await res.json();
+                                        const mine = (data.games || []).find(g => g.game_id === id);
+                                        if (mine) {
+                                            this.gameId = id;
+                                            this.player = mine.color;
+                                            this.token = mine.token || '';
+                                            localStorage.setItem('chess:' + id, JSON.stringify({ player: this.player, token: this.token }));
+                                            this.connectSSE();
+                                            return;
+                                        }
+                                    }
+                                } catch (e) { /* fall through to a fresh join */ }
+
+                                this.joinId = id;
+                                this.joinGame();
                             },
 
                             async createGame(gameMode, fen = '') {
