@@ -29,8 +29,9 @@ func setupTestServer(t *testing.T, port string) (string, func()) {
 	os.Setenv("DATABASE_URL", dsn)
 	os.Setenv("SERVER_PORT", port)
 
-	// Reset the schema so each run starts from a clean slate; the server
-	// re-creates the tables via AutoMigrate on startup.
+	// Reset the schema so each run starts from a clean slate. The server no
+	// longer migrates on startup, so the fixture applies the schema itself -
+	// the same step an operator runs with `clair migrate`.
 	resetTestDatabase(t, dsn)
 
 	// Context to cancel server after test
@@ -74,8 +75,9 @@ func setupTestServer(t *testing.T, port string) (string, func()) {
 	}
 }
 
-// resetTestDatabase drops the tables managed by the app so that tests are
-// idempotent even when run repeatedly against a persistent Postgres instance.
+// resetTestDatabase drops the tables managed by the app and re-applies the
+// schema, so that tests are idempotent even when run repeatedly against a
+// persistent Postgres instance.
 func resetTestDatabase(t *testing.T, dsn string) {
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -89,6 +91,10 @@ func resetTestDatabase(t *testing.T, dsn string) {
 	defer sqlDB.Close()
 
 	dropAppTables(t, db)
+
+	if err := database.Migrate(db); err != nil {
+		t.Fatalf("failed to migrate the test schema: %v", err)
+	}
 }
 
 // dropAppTables drops every table under migration, newest domain first.

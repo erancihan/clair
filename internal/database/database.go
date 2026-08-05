@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
+	kernel "github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database/models"
 	"github.com/erancihan/clair/internal/server/booking"
 	"github.com/erancihan/clair/internal/server/games"
@@ -15,6 +17,13 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
+// New opens the connection pool and nothing else. It runs no DDL: schema work is
+// a deliberate step (`clair migrate`), not a side effect of booting, so a rebuild
+// or a restart never rewrites tables underneath a running deployment.
+//
+// Set DATABASE_AUTO_MIGRATE=true to fold Migrate back into startup. That is a
+// convenience for a throwaway development database and a mistake for a shared
+// one, which is why it is off unless asked for.
 func New(ctx context.Context) (*gorm.DB, error) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -51,12 +60,42 @@ func New(ctx context.Context) (*gorm.DB, error) {
 
 	zapLogger.Info("Connected to PostgreSQL database")
 
-	// register models here
-	if err := db.AutoMigrate(MigrationModels()...); err != nil {
-		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	if AutoMigrateEnabled() {
+		zapLogger.Info("DATABASE_AUTO_MIGRATE is set, migrating on startup")
+
+		if err := Migrate(db); err != nil {
+			return nil, err
+		}
 	}
 
 	return db, nil
+}
+
+// AutoMigrateEnabled reports whether startup should migrate. Anything strconv
+// reads as true turns it on; an unset or unparsable value leaves it off, so a
+// typo fails closed rather than silently altering a schema.
+func AutoMigrateEnabled() bool {
+	on, err := strconv.ParseBool(os.Getenv("DATABASE_AUTO_MIGRATE"))
+	return err == nil && on
+}
+
+// Migrate brings the schema up to the shape the code expects: the model tables,
+// then the booking notify triggers. Both halves are idempotent, so re-running
+// costs nothing and changes nothing.
+func Migrate(db *gorm.DB) error {
+	// register models here
+	if err := db.AutoMigrate(MigrationModels()...); err != nil {
+		return fmt.Errorf("failed to migrate database: %w", err)
+	}
+
+	// Inventory changes announce themselves on a Postgres channel, which is what
+	// lets a seat map stream instead of poll. It lives in the database because
+	// more than one process writes inventory.
+	if err := kernel.InstallNotifyTriggers(db); err != nil {
+		return fmt.Errorf("failed to install booking notify triggers: %w", err)
+	}
+
+	return nil
 }
 
 // MigrationModels is the full set of models AutoMigrate manages: the shared
