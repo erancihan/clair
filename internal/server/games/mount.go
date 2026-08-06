@@ -41,8 +41,9 @@ import (
 //
 // The games POST routes below are pointedly NOT behind CSRF: they predate the
 // token being reachable from the browser, and wrapping them now would break
-// every client that has not been taught to send one. That is the chess domain's
-// call to make, together with the front-end change that goes with it.
+// every client that has not been taught to send one. Each game decides when to
+// adopt it, together with the front-end change that goes with it; chess records
+// its reasoning, and the triggers that will reverse it, in chess_mount.go.
 func Mount(r *router.Router, ctx server_context.BackEndContext) {
 	r.Group("games", func(games *router.Router) {
 		games.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
@@ -58,13 +59,8 @@ func Mount(r *router.Router, ctx server_context.BackEndContext) {
 			route.HandleFunc("POST /move", TicTacToe.TakeAction(ctx))
 		})
 
-		games.Group("chess", func(route *router.Router) {
-			route.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-				templ.Handler(web.Base(api_auth.PageShell(w, r, "Chess"), pages.Chess())).ServeHTTP(w, r)
-			})
-			route.HandleFunc("POST /create", Chess.CreateGame(ctx))
-			route.HandleFunc("GET /stream", Chess.StreamGame(ctx))
-			route.HandleFunc("POST /move", Chess.TakeAction(ctx))
-		})
+		// Chess owns enough routes of its own that wiring them here would crowd
+		// out the example above; they live in chess_mount.go.
+		mountChess(games, ctx)
 	})
 }
