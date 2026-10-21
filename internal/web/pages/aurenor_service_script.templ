@@ -1,0 +1,349 @@
+package pages
+
+// serviceScript drives one service's booking screen, and the panel of what this
+// browser has booked.
+//
+// Two things here are load-bearing:
+//
+//   - Open times are pushed, not polled. A booking made in another browser takes
+//     a time this one is about to offer, and polling would surface that whenever
+//     the next tick happened to land — which is exactly when somebody is choosing.
+//   - An error survives the refresh it triggers. A 409 used to set a message and
+//     then immediately clear it by reloading the times, so the one explanation of
+//     what went wrong was erased before it could be read.
+templ serviceScript() {
+	<script>
+		// Bookings this browser owns. Guest appointments have no account, so the
+		// cancel token returned at booking time is the only key to them.
+		const AURENOR_BOOKINGS_KEY = 'aurenor_bookings';
+		const AURENOR_BOOKINGS_EVENT = 'aurenor-bookings-changed';
+
+		function aurenorStored() {
+			try {
+				return JSON.parse(window.localStorage.getItem(AURENOR_BOOKINGS_KEY)) || [];
+			} catch (e) {
+				return [];
+			}
+		}
+
+		function aurenorSaveStored(list) {
+			// Storage can be full, disabled or private. Losing the panel is a
+			// degraded page; it must not read as a failed booking to the caller.
+			try { window.localStorage.setItem(AURENOR_BOOKINGS_KEY, JSON.stringify(list)); } catch (e) {}
+			// The screen and the panel are separate components; this is how a
+			// booking made in one reaches the other without a page reload.
+			window.dispatchEvent(new CustomEvent(AURENOR_BOOKINGS_EVENT));
+		}
+
+		function aurenorRemember(entry) {
+			const kept = aurenorStored().filter(b => b.cancel_token !== entry.cancel_token);
+			kept.push(entry);
+			aurenorSaveStored(kept);
+		}
+
+		function aurenorForget(token) {
+			aurenorSaveStored(aurenorStored().filter(b => b.cancel_token !== token));
+		}
+
+		document.addEventListener('alpine:init', () => {
+			Alpine.data('service', (cfg) => ({
+				slug: cfg.slug,
+				title: cfg.title,
+				backHref: cfg.backHref,
+
+				slots: [],
+				selectedDay: '',
+				chosen: null,
+				confirmation: null,
+
+				loading: true,
+				booking: false,
+				error: '',
+				nameError: '',
+				guestName: '',
+				guestEmail: '',
+
+				stream: null,
+				poller: null,
+
+				async init() {
+					await this.load();
+					this.loading = false;
+					this.openStream();
+				},
+
+				async load() {
+					try {
+						const res = await fetch('/appointments/schedules/' + encodeURIComponent(this.slug) + '/availability');
+						if (!res.ok) {
+							this.error = 'Could not load times right now.';
+							return;
+						}
+						// A schedule with nothing open answers 200 with a null body.
+						this.apply((await res.json()) || []);
+					} catch (e) {
+						this.error = 'Could not reach the booking service.';
+					}
+				},
+
+				// One subscription for the one service on screen. The institution
+				// page lists services and holds none of their availability, so
+				// nothing here is watching something nobody is looking at.
+				openStream() {
+					if (!window.EventSource) {
+						this.startPolling();
+						return;
+					}
+					const stream = new EventSource('/appointments/schedules/' + encodeURIComponent(this.slug) + '/availability/stream');
+					this.stream = stream;
+
+					stream.onmessage = (event) => {
+						try {
+							this.apply(JSON.parse(event.data) || []);
+						} catch (e) {
+							// A malformed frame is not worth tearing the stream down for.
+						}
+					};
+
+					// EventSource fires onerror while it is retrying as well as when it
+					// was refused. Only a refusal (503, wrong content-type) leaves it
+					// CLOSED; a dropped packet leaves it CONNECTING and it reconnects on
+					// its own. Fall back only on the refusal.
+					stream.onerror = () => {
+						if (stream.readyState !== EventSource.CLOSED) return;
+						if (this.stream === stream) this.stream = null;
+						if (!this.poller) this.startPolling();
+					};
+				},
+
+				startPolling() {
+					this.stopPolling();
+					this.poller = setInterval(() => {
+						if (!document.hidden) this.load();
+					}, 15000);
+				},
+
+				stopPolling() {
+					if (this.poller) clearInterval(this.poller);
+					this.poller = null;
+				},
+
+				// Note what this does NOT do: clear `error`. A 409 refreshes the
+				// times, and clearing here would erase the message explaining why.
+				apply(slots) {
+					this.slots = slots;
+
+					const days = this.days;
+					if (!days.some(day => day.key === this.selectedDay)) {
+						this.selectedDay = days.length > 0 ? days[0].key : '';
+					}
+
+					// A time taken by somebody else while it was selected.
+					if (this.chosen && !slots.some(slot => slot.start_at === this.chosen.start_at)) {
+						this.chosen = null;
+					}
+				},
+
+				get days() {
+					return window.aurenorDays(this.slots, 'start_at');
+				},
+
+				selectDay(key) {
+					this.selectedDay = key;
+					this.chosen = null;
+				},
+
+				// Morning and afternoon, because a column of thirty times is a wall
+				// and people think in halves of a day.
+				get groupsOnDay() {
+					const day = this.days.find(d => d.key === this.selectedDay);
+					if (!day) return [];
+
+					const morning = day.items.filter(slot => new Date(slot.start_at).getHours() < 12);
+					const afternoon = day.items.filter(slot => new Date(slot.start_at).getHours() >= 12);
+
+					const groups = [];
+					if (morning.length > 0) groups.push({ name: 'Morning', slots: morning });
+					if (afternoon.length > 0) groups.push({ name: 'Afternoon', slots: afternoon });
+					return groups;
+				},
+
+				choose(slot) {
+					this.chosen = slot;
+					this.error = '';
+					this.nameError = '';
+				},
+
+				async confirm() {
+					if (!this.chosen || this.booking) return;
+					if (!this.guestName.trim()) {
+						// A disabled button that never says why is its own bug: validate
+						// on the press instead.
+						this.nameError = 'Please add a name for the booking.';
+						this.$nextTick(() => {
+							const field = document.getElementById('service-name');
+							if (field) field.focus();
+						});
+						return;
+					}
+
+					this.booking = true;
+					this.error = '';
+					this.nameError = '';
+
+					try {
+						const res = await fetch('/appointments/schedules/' + encodeURIComponent(this.slug) + '/book', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+							body: JSON.stringify({
+								// Echoed back exactly as availability gave it: the slot is
+								// matched on this instant.
+								start_at: this.chosen.start_at,
+								guest_name: this.guestName,
+								guest_email: this.guestEmail,
+							}),
+						});
+
+						if (res.status === 201) {
+							const appointment = await res.json();
+							this.confirmation = appointment;
+							aurenorRemember({
+								cancel_token: appointment.cancel_token,
+								schedule_slug: this.slug,
+								title: this.title,
+								start_at: appointment.start_at,
+								end_at: appointment.end_at,
+								guest_name: appointment.guest_name,
+							});
+							this.chosen = null;
+							return;
+						}
+
+						if (res.status === 403) {
+							this.error = 'This page went stale. Reload it and try again.';
+							return;
+						}
+						if (res.status === 409) {
+							// Somebody took it first. Say so and let the stream redraw
+							// underneath; the message stays put.
+							this.error = 'That time was taken while you were deciding. Pick another.';
+							this.chosen = null;
+							return;
+						}
+
+						// Every error body from these routes is plain text.
+						this.error = (await res.text()).trim() || 'Could not book that time.';
+					} catch (e) {
+						this.error = 'Could not reach the booking service.';
+					} finally {
+						this.booking = false;
+					}
+				},
+
+				reset() {
+					this.confirmation = null;
+					this.chosen = null;
+					this.error = '';
+					this.guestName = '';
+					this.guestEmail = '';
+				},
+
+				destroy() {
+					this.stopPolling();
+					if (this.stream) this.stream.close();
+				},
+			}));
+
+			Alpine.data('apptBookings', () => ({
+				mine: [],
+				cancelling: '',
+				error: '',
+
+				init() {
+					this.refresh();
+					window.addEventListener(AURENOR_BOOKINGS_EVENT, () => this.refresh());
+				},
+
+				async refresh() {
+					const mine = aurenorStored();
+					const known = new Set(mine.map(b => b.cancel_token));
+
+					try {
+						const res = await fetch('/appointments/me', { headers: { 'Accept': 'application/json' } });
+						// 401 is the ordinary answer here: these pages are built for
+						// visitors without an account.
+						if (res.ok) {
+							for (const a of (await res.json()) || []) {
+								if (a.status !== 'confirmed' || known.has(a.cancel_token)) continue;
+								mine.push({
+									cancel_token: a.cancel_token,
+									title: 'Appointment',
+									start_at: a.start_at,
+									end_at: a.end_at,
+									guest_name: a.guest_name,
+								});
+							}
+						}
+					} catch (e) {
+						// Offline: what this browser stored is still the truth it has.
+					}
+
+					mine.sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
+					this.mine = mine;
+				},
+
+				async cancel(token) {
+					this.cancelling = token;
+					this.error = '';
+					try {
+						const res = await fetch('/appointments/cancel', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+							body: JSON.stringify({ token: token }),
+						});
+						if (!res.ok) {
+							this.error = (await res.text()).trim() || 'Could not cancel that booking.';
+							return;
+						}
+						// Cancelling is idempotent, so dropping the token here is safe.
+						aurenorForget(token);
+					} catch (e) {
+						this.error = 'Could not reach the booking service.';
+					} finally {
+						this.cancelling = '';
+					}
+				},
+			}));
+		});
+	</script>
+}
+
+// myBookings lists what this browser has booked and cancels it. It is
+// localStorage-first by necessity: a guest booking carries no user id, so the
+// authenticated /appointments/me list would be empty for the visitors these
+// screens are built for. It merges /me on top when somebody is signed in.
+templ myBookings() {
+	<div x-data="apptBookings" x-show="mine.length > 0" x-cloak
+		class="mt-10 rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-800">
+		<h2 class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">My bookings</h2>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+			Kept in this browser. The cancellation code is the only proof of ownership — clear site data and the booking can no longer be cancelled from here.
+		</p>
+
+		<div class="mt-4 divide-y divide-zinc-100 dark:divide-zinc-700/60">
+			<template x-for="b in mine" :key="b.cancel_token">
+				<div class="flex items-center justify-between gap-4 py-3">
+					<div class="min-w-0">
+						<p class="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100" x-text="b.title"></p>
+						<p class="text-sm text-zinc-500 dark:text-zinc-400" x-text="aurenorWhen(b.start_at)"></p>
+					</div>
+					<button type="button" @click="cancel(b.cancel_token)" :disabled="cancelling === b.cancel_token"
+						class="flex-none rounded-full px-3 py-1.5 text-sm font-medium text-red-600 ring-1 ring-red-200 transition hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:ring-red-400/30 dark:hover:bg-red-400/10"
+						x-text="cancelling === b.cancel_token ? 'Cancelling…' : 'Cancel'">Cancel</button>
+				</div>
+			</template>
+		</div>
+
+		<p x-show="error" x-cloak class="mt-3 text-sm text-red-600 dark:text-red-400" x-text="error"></p>
+	</div>
+}

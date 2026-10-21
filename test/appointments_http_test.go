@@ -225,7 +225,7 @@ func TestAppointmentsHTTP_FreeFlow(t *testing.T) {
 	resp.Body.Close()
 
 	// Cancel frees it; re-book succeeds.
-	resp = doJSON(t, guest, "POST", ts.URL+"/appointments/cancel?token="+appt.CancelToken, nil)
+	resp = doJSON(t, guest, "POST", ts.URL+"/appointments/cancel", map[string]any{"token": appt.CancelToken})
 	mustStatus(t, resp, http.StatusOK, "cancel")
 	resp.Body.Close()
 
@@ -469,7 +469,7 @@ func TestAppointmentsHTTP_PaidCancelRefund(t *testing.T) {
 	}
 
 	// Cancel → slot freed, order refunded, refund payment recorded.
-	resp = doJSON(t, guest, "POST", ts.URL+"/appointments/cancel?token="+appt.CancelToken, nil)
+	resp = doJSON(t, guest, "POST", ts.URL+"/appointments/cancel", map[string]any{"token": appt.CancelToken})
 	mustStatus(t, resp, http.StatusOK, "cancel")
 	resp.Body.Close()
 
@@ -488,4 +488,27 @@ func TestAppointmentsHTTP_PaidCancelRefund(t *testing.T) {
 	if inv.Booked != 0 {
 		t.Fatalf("after refund booked=%d, want 0 (slot freed)", inv.Booked)
 	}
+}
+
+// TestCreateScheduleDuplicateSlugIs409AndOtherErrorsAreNot: 409 means "that
+// slug is taken". A request that fails for any other reason must not be
+// reported as a duplicate, or the caller retries with a new slug for nothing.
+func TestCreateScheduleDuplicateSlugIs409AndOtherErrorsAreNot(t *testing.T) {
+	ts, host, _ := newApptServer(t)
+	registerAndLogin(t, ts, host, "dup_host@example.com")
+
+	body := map[string]any{"slug": "dup-office", "name": "Dup", "timezone": "UTC", "slot_duration_min": 30, "capacity": 1, "window_days": 30}
+	first := doJSON(t, host, "POST", ts.URL+"/appointments/schedules", body)
+	mustStatus(t, first, http.StatusCreated, "first create")
+	first.Body.Close()
+	second := doJSON(t, host, "POST", ts.URL+"/appointments/schedules", body)
+	mustStatus(t, second, http.StatusConflict, "duplicate slug")
+	second.Body.Close()
+
+	bad := doJSON(t, host, "POST", ts.URL+"/appointments/schedules",
+		map[string]any{"slug": "bad-tz", "name": "Bad", "timezone": "Mars/Olympus", "slot_duration_min": 30, "capacity": 1, "window_days": 30})
+	if bad.StatusCode == http.StatusConflict {
+		t.Fatalf("an invalid timezone was reported as a duplicate slug (409)")
+	}
+	bad.Body.Close()
 }

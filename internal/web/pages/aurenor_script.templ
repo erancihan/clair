@@ -1,0 +1,138 @@
+package pages
+
+// aurenorScript holds what every live Aurenor page needs before its own
+// component script runs: the cloak rule and the handful of globals the booking
+// and ticketing components share.
+//
+// The assignments are idempotent so a page rendering both components (an
+// institution that one day sells tickets and takes appointments) does not
+// redeclare them.
+templ aurenorScript() {
+	<style>
+		[x-cloak] { display: none !important; }
+	</style>
+	<script>
+		// The session-bound token the page shell published. Mutating booking and
+		// ticketing routes are behind CSRF; the reads are not.
+		window.aurenorCSRF = window.aurenorCSRF || function () {
+			const meta = document.querySelector('meta[name="csrf-token"]');
+			return meta ? meta.content : '';
+		};
+
+		// Times arrive in UTC and are shown in the visitor's own zone.
+		window.aurenorWhen = window.aurenorWhen || function (iso) {
+			if (!iso) return '';
+			return new Date(iso).toLocaleString([], {
+				weekday: 'long', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+			});
+		};
+
+		window.aurenorTime = window.aurenorTime || function (iso) {
+			if (!iso) return '';
+			return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		};
+
+		// ---- money and clock -------------------------------------------------
+
+		window.aurenorMoney = window.aurenorMoney || function (cents, currency) {
+			const cur = currency || 'USD';
+			try {
+				return new Intl.NumberFormat([], { style: 'currency', currency: cur }).format((cents || 0) / 100);
+			} catch (e) {
+				return ((cents || 0) / 100).toFixed(2) + ' ' + cur;
+			}
+		};
+
+		// mm:ss, floored: a countdown must never promise time that is not there.
+		window.aurenorCountdown = window.aurenorCountdown || function (ms) {
+			const total = Math.max(0, Math.floor(ms / 1000));
+			return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+		};
+
+		// ---- ticketing holds this browser owns -------------------------------
+		//
+		// A guest hold has no account behind it, so the token from the response is
+		// the only proof it is theirs.
+
+		window.AURENOR_HOLDS_KEY = 'aurenor_theater_holds';
+		window.AURENOR_HOLDS_EVENT = 'aurenor-holds-changed';
+
+		window.aurenorHolds = window.aurenorHolds || function () {
+			let list;
+			try {
+				list = JSON.parse(window.localStorage.getItem(window.AURENOR_HOLDS_KEY)) || [];
+			} catch (e) {
+				return [];
+			}
+			// A lapsed hold is not a hold; pruning on read keeps the panel honest.
+			const live = list.filter(h => !h.expiresAt || Date.parse(h.expiresAt) > Date.now());
+			if (live.length !== list.length) {
+				try { window.localStorage.setItem(window.AURENOR_HOLDS_KEY, JSON.stringify(live)); } catch (e) {}
+			}
+			return live;
+		};
+
+		window.aurenorSaveHolds = window.aurenorSaveHolds || function (list) {
+			// Storage can be full, disabled or private. Losing the panel is a
+			// degraded page; it must not read as a failed booking to the caller.
+			try { window.localStorage.setItem(window.AURENOR_HOLDS_KEY, JSON.stringify(list)); } catch (e) {}
+			window.dispatchEvent(new CustomEvent(window.AURENOR_HOLDS_EVENT));
+		};
+
+		window.aurenorRememberHold = window.aurenorRememberHold || function (entry) {
+			const kept = window.aurenorHolds().filter(h => h.key !== entry.key);
+			kept.push(entry);
+			window.aurenorSaveHolds(kept);
+		};
+
+		window.aurenorForgetHold = window.aurenorForgetHold || function (key) {
+			window.aurenorSaveHolds(window.aurenorHolds().filter(h => h.key !== key));
+		};
+
+		document.addEventListener('alpine:init', () => {
+			if (Alpine.__aurenorHolds) return;
+			Alpine.__aurenorHolds = true;
+
+			Alpine.data('theaterHolds', () => ({
+				mine: [],
+				releasing: '',
+
+				init() {
+					this.refresh();
+					window.addEventListener(window.AURENOR_HOLDS_EVENT, () => this.refresh());
+					setInterval(() => this.refresh(), 30000);
+				},
+
+				refresh() {
+					this.mine = window.aurenorHolds().sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt));
+				},
+
+				left(entry) { return window.aurenorCountdown(Date.parse(entry.expiresAt) - Date.now()); },
+
+				summary(entry) {
+					if (entry.seats && entry.seats.length) return entry.seats.join(', ');
+					return entry.count + (entry.count === 1 ? ' ticket' : ' tickets');
+				},
+
+				money(entry) { return window.aurenorMoney(entry.totalCents, entry.currency); },
+
+				async release(entry) {
+					this.releasing = entry.key;
+					window.aurenorForgetHold(entry.key);
+					try {
+						await fetch('/events/' + encodeURIComponent(entry.slug) + '/holds/release', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+							body: JSON.stringify({ hold_tokens: entry.tokens }),
+						});
+					} catch (e) {
+						// Already forgotten locally; the reaper frees the rest.
+					} finally {
+						this.releasing = '';
+						this.refresh();
+					}
+				},
+			}));
+		});
+	</script>
+}

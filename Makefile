@@ -3,54 +3,68 @@
 export $(shell sed -e '/^\#/d' -e 's/=.*//' .env 2>/dev/null)
 export GOWORKDIR=./
 
-.PHONY: build
-
 OUT_DIR := ./builds
-OUTFILE := ${OUT_DIR}/clair.bin
+OUTFILE := ${OUT_DIR}/clair
 GO_ARGS := -mod vendor
-GO_BUILD_CMD := go build ${GO_ARGS}
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/erancihan/clair/internal/clair.Version=${VERSION}
+GO_BUILD_CMD := go build ${GO_ARGS} -ldflags "${LDFLAGS}"
 
 GNUMAKEFLAGS=-j3
 
+.PHONY: all deps assets build build-linux-amd64 dev run run-server run-scheduler migrate seed \
+        docker docker-build docker-run docker-dev tidy db-up db-down test
 
 all: build
 
-deps: 
+deps:
 	go mod download
 
+# CSS is built from the templ sources, then templ is generated. npm ci is what
+# makes this work on a fresh clone: nothing else installs the Node toolchain.
 assets: PATH:=$(PWD)/node_modules/.bin:$(PATH)
 assets: deps
+	npm ci
 	npm run css
 	go generate ./...
 
 build: assets
-	go build -o ./builds/clair ./cmd/clair
+	${GO_BUILD_CMD} -o "${OUTFILE}" ./cmd/clair
+
+build-linux-amd64: assets
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+		${GO_BUILD_CMD} -o "${OUTFILE}-linux-amd64" ./cmd/clair
 
 # dev with air. air already calls build
-dev: 
+dev:
 	go tool air
 
 # ----------------------
-build-linux-amd64:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-		${GO_BUILD_CMD} -o "${OUTFILE}" cmd/clair/main.go
+# One binary, one subcommand per process. The order on a fresh database is
+# migrate → seed → run-server (+ run-scheduler).
+run: run-server
 
-# ----------------------
-run:
-	"${OUTFILE}" --verbose
+run-server:
+	"${OUTFILE}" server
 
-run-noenv:
-	${OUTFILE} --verbose
+run-scheduler:
+	"${OUTFILE}" scheduler
 
-all: build
+# apply the database schema (idempotent; requires DATABASE_URL)
+migrate:
+	"${OUTFILE}" migrate
+
+# seed the Aurenor booking-simulation data (idempotent; requires DATABASE_URL)
+seed:
+	"${OUTFILE}" seed
 
 # docker
 docker: docker-build
 docker-build:
-	docker build -t clair .
+	docker build --build-arg VERSION=${VERSION} -t clair .
 
 docker-run:
-	docker run -it --rm --env-file=.env clair
+	docker run -it --rm --env-file=.env clair server
 
 docker-dev: docker-build docker-run
 
@@ -58,10 +72,10 @@ docker-dev: docker-build docker-run
 tidy:
 	go mod tidy
 	go mod vendor
-	
+
 # local infra for development / tests (PostgreSQL + Valkey)
 db-up:
-	docker compose -f docker-compose.dev.yaml up -d postgres
+	docker compose -f docker-compose.dev.yaml up -d postgres valkey
 
 db-down:
 	docker compose -f docker-compose.dev.yaml down
@@ -69,6 +83,5 @@ db-down:
 # testing — requires a running PostgreSQL.
 # Point DATABASE_URL at it (defaults to the docker-compose.dev.yaml service):
 #   make db-up && make test
-.PHONY: test
 test:
 	go test ./test/... -v

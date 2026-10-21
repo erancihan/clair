@@ -1,6 +1,7 @@
 package booking_test
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -122,5 +123,24 @@ func TestSetCapacity_RefusesBelowBooked(t *testing.T) {
 
 	if err := booking.SetCapacity(db, inv.ID, 3); err != nil {
 		t.Fatalf("shrink to exactly booked: %v", err)
+	}
+}
+
+func TestBlock_RefusesOverCapacity(t *testing.T) {
+	db := memDB(t)
+	inv := models.BookingInventory{Capacity: 1, TierID: uptr(9)}
+	if err := db.Create(&inv).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := booking.BookDirect(db, inv.ID, 1); err != nil {
+		t.Fatalf("book: %v", err)
+	}
+	if err := booking.Block(db, inv.ID, 1); !errors.Is(err, booking.ErrSoldOut) {
+		t.Fatalf("block over capacity: got %v, want ErrSoldOut", err)
+	}
+	var got models.BookingInventory
+	db.First(&got, inv.ID)
+	if got.Blocked != 0 {
+		t.Fatalf("blocked=%d after refused block, want 0", got.Blocked)
 	}
 }

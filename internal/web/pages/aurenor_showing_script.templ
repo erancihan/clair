@@ -1,0 +1,601 @@
+package pages
+
+// showingScript drives one showing's seat picker.
+//
+// Three things here are load-bearing:
+//
+//   - The countdown derives from the server's absolute expiry corrected by a
+//     clock offset, and always rounds down. A client clock running fast would
+//     otherwise claim the seats are gone while the server still holds them.
+//   - Seat appearance comes from one function, so the map and its legend cannot
+//     disagree, and every state differs in fill, edge AND glyph — colour alone
+//     fails in greyscale and for most colour-blind viewers.
+//   - Seat changes are pushed, not polled: the page opens an EventSource and the
+//     server sends the whole map whenever inventory moves, including changes made
+//     by the reaper in another process. Polling remains only as the fallback for
+//     a browser or a proxy that will not carry a stream.
+templ showingScript() {
+	<script>
+		const AURENOR_POLL_MS = 10000;
+
+		document.addEventListener('alpine:init', () => {
+			Alpine.data('showing', (cfg) => ({
+				slug: cfg.slug,
+				film: cfg.film,
+				salon: cfg.salon,
+				kind: cfg.kind,
+				backHref: cfg.backHref,
+				priceCents: cfg.priceCents,
+				currency: 'USD',
+				startAt: null,
+				remaining: null,
+				maxPerBuyer: 0,
+				tierId: null,
+
+				seats: [],
+				selected: [],
+				qty: 2,
+				autoPicked: false,
+				focusId: null,
+				lostIds: [],
+
+				hold: null,
+				countdown: '',
+				urgency: 'calm',
+				clockOffset: 0,
+				timer: null,
+				poller: null,
+				stream: null,
+
+				loading: true,
+				seatsLoading: false,
+				holding: false,
+				loadError: '',
+				seatError: '',
+				error: '',
+				notice: '',
+				nameError: '',
+				guestName: '',
+				guestEmail: '',
+				copied: false,
+
+				async init() {
+					await this.loadEvent();
+					if (!this.loadError) {
+						if (this.kind === 'seated') await this.loadSeats();
+						this.restoreHold();
+						this.openStream();
+						document.addEventListener('visibilitychange', () => {
+							// Only matters on the polling fallback; the stream never went away.
+							if (!document.hidden && this.poller) this.refresh({ quiet: true });
+						});
+					}
+					this.loading = false;
+				},
+
+				// What "refresh" means depends on what this showing sells: a seat
+				// map for assigned seats, a count for open seating.
+				async refresh(opts) {
+					if (this.kind === 'seated') return this.loadSeats(opts);
+					return this.loadEvent();
+				},
+
+				// A hold placed before a reload is still the buyer's: it is in storage
+				// with its expiry, and the server still honours it. Without this a
+				// reload shows their own seats as taken and drops the countdown.
+				restoreHold() {
+					const mine = window.aurenorHolds().find(h => h.slug === this.slug);
+					if (!mine) return;
+					this.hold = mine;
+					this.startCountdown();
+				},
+
+				async loadEvent() {
+					try {
+						const res = await fetch('/events/' + encodeURIComponent(this.slug));
+						if (!res.ok) {
+							this.loadError = 'This showing is no longer on sale.';
+							return;
+						}
+						this.noteClock(res);
+						const data = await res.json();
+						const tier = (data.tiers || [])[0];
+						if (!tier) {
+							this.loadError = 'This showing has no tickets on sale.';
+							return;
+						}
+						this.startAt = data.event.start_at;
+						this.maxPerBuyer = data.event.max_per_buyer;
+						this.tierId = tier.id;
+						this.kind = tier.kind;
+						this.priceCents = tier.price_cents;
+						this.currency = tier.currency;
+						this.remaining = tier.remaining;
+						this.qty = Math.min(this.qty, this.seatLimit);
+					} catch (e) {
+						this.loadError = 'Could not reach the box office.';
+					}
+				},
+
+				get startLabel() {
+					return this.startAt ? aurenorWhen(this.startAt) : '';
+				},
+
+				// A response carries the server's clock. Using it keeps the countdown
+				// honest on a machine whose own clock has drifted.
+				noteClock(res) {
+					const header = res.headers.get('Date');
+					if (!header) return;
+					const t = Date.parse(header);
+					if (!isNaN(t)) this.clockOffset = t - Date.now();
+				},
+
+				serverNow() { return Date.now() + this.clockOffset; },
+
+				async loadSeats(opts) {
+					const quiet = opts && opts.quiet;
+					if (!quiet) this.seatsLoading = true;
+					try {
+						const res = await fetch('/events/' + encodeURIComponent(this.slug) + '/seats');
+						if (!res.ok) {
+							this.seatError = 'Could not load the seat map.';
+							return;
+						}
+						this.noteClock(res);
+						this.applySeats((await res.json()) || []);
+					} catch (e) {
+						this.seatError = 'Could not reach the box office.';
+					} finally {
+						this.seatsLoading = false;
+					}
+				},
+
+				startPolling() {
+					this.stopPolling();
+					this.poller = setInterval(() => {
+						if (document.hidden || this.holding) return;
+						this.refresh({ quiet: true });
+					}, AURENOR_POLL_MS);
+				},
+
+				stopPolling() {
+					if (this.poller) clearInterval(this.poller);
+					this.poller = null;
+				},
+
+				// Seats and counts change because of other people, so the page is told
+				// rather than asking. One connection either way: the seat map for
+				// assigned seating, the board summary (which carries `remaining`) for
+				// open seating.
+				openStream() {
+					if (!window.EventSource) {
+						this.startPolling();
+						return;
+					}
+					const seated = this.kind === 'seated';
+					const url = seated
+						? '/events/' + encodeURIComponent(this.slug) + '/seats/stream'
+						: '/events/summary/stream?slugs=' + encodeURIComponent(this.slug);
+					const stream = new EventSource(url);
+					this.stream = stream;
+
+					stream.onmessage = (event) => {
+						try {
+							const data = JSON.parse(event.data);
+							if (seated) {
+								this.applySeats(data);
+							} else {
+								const row = (data || []).find(r => r.slug === this.slug);
+								if (row) this.remaining = row.remaining;
+							}
+						} catch (e) {
+							// A malformed frame is not worth tearing the stream down for.
+						}
+					};
+
+					// EventSource fires onerror while it is retrying as well as when it
+					// was refused. Only a refusal (503, wrong content-type) leaves it
+					// CLOSED; a dropped packet leaves it CONNECTING and it reconnects on
+					// its own. Fall back only on the refusal.
+					stream.onerror = () => {
+						if (stream.readyState !== EventSource.CLOSED) return;
+						if (this.stream === stream) this.stream = null;
+						if (!this.poller) this.startPolling();
+					};
+				},
+
+				closeStream() {
+					if (this.stream) this.stream.close();
+					this.stream = null;
+				},
+
+				applySeats(seats) {
+					this.seats = seats;
+					this.seatError = '';
+					if (this.focusId === null && this.seats.length > 0) this.focusId = this.seats[0].id;
+
+					// A seat that went while the buyer was choosing is dropped by name,
+					// not by wiping everything they picked.
+					const free = new Set(this.seats.filter(s => s.state === 'free').map(s => s.id));
+					const mine = new Set(this.myHeldSeatIds());
+					const lost = this.selected.filter(id => !free.has(id) && !mine.has(id));
+					if (lost.length === 0) return;
+
+					const names = this.labelsFor(lost);
+					this.selected = this.selected.filter(id => free.has(id) || mine.has(id));
+					this.lostIds = lost;
+					this.notice = names.join(', ') +
+						(lost.length === 1 ? ' was taken while you were choosing.' : ' were taken while you were choosing.');
+					setTimeout(() => { this.lostIds = []; }, 3000);
+				},
+
+				// The map arrives ordered by section, row, number; this only groups it.
+				get rows() {
+					const out = [];
+					let row = null;
+					for (const seat of this.seats) {
+						const key = seat.section + ' ' + seat.row_name;
+						if (!row || row.key !== key) {
+							row = { key: key, name: seat.row_name, section: seat.section, seats: [] };
+							out.push(row);
+						}
+						row.seats.push(seat);
+					}
+					return out;
+				},
+
+				myHeldSeatIds() { return this.hold && this.hold.seatIds ? this.hold.seatIds : []; },
+
+				labelsFor(ids) {
+					const byId = new Map(this.seats.map(s => [s.id, s.label]));
+					return ids.map(id => byId.get(id) || ('#' + id));
+				},
+
+				seatState(seat) {
+					if (this.myHeldSeatIds().includes(seat.id)) return 'yours';
+					if (this.selected.includes(seat.id)) return 'selected';
+					if (seat.state === 'blocked') return 'blocked';
+					if (seat.state === 'free') return 'free';
+					return 'taken';
+				},
+
+				stateWord(seat) {
+					const state = this.seatState(seat);
+					if (state === 'yours') return 'held by you';
+					if (state === 'selected') return 'selected';
+					if (state === 'free') return this.atCap ? 'available, seat limit reached' : 'available';
+					if (state === 'blocked') return 'not for sale';
+					return 'taken';
+				},
+
+				seatGlyph(seat) {
+					const state = this.seatState(seat);
+					if (state === 'taken') return '×';
+					if (state === 'blocked') return '·';
+					return String(seat.number);
+				},
+
+				seatClass(seat) {
+					const state = this.seatState(seat);
+					if (state === 'selected') {
+						return 'bg-teal-600 text-white font-semibold ring-2 ring-teal-600 ring-offset-1 ring-offset-zinc-50 dark:ring-offset-black';
+					}
+					if (state === 'yours') {
+						return 'bg-teal-50 text-teal-700 border-2 border-dashed border-teal-600 dark:bg-teal-400/10 dark:text-teal-300 dark:border-teal-400';
+					}
+					if (state === 'taken') {
+						return 'bg-zinc-300 text-zinc-500 cursor-not-allowed dark:bg-zinc-600 dark:text-zinc-400';
+					}
+					if (state === 'blocked') {
+						return 'border border-dashed border-zinc-300 bg-transparent text-zinc-300 cursor-not-allowed dark:border-zinc-700 dark:text-zinc-700';
+					}
+					if (this.lostIds.includes(seat.id)) {
+						return 'bg-white text-zinc-500 ring-2 ring-red-500 dark:bg-zinc-900 dark:text-zinc-400';
+					}
+					if (this.atCap) {
+						return 'bg-white text-zinc-400 ring-1 ring-zinc-200 opacity-40 cursor-not-allowed dark:bg-zinc-900 dark:text-zinc-500 dark:ring-zinc-700';
+					}
+					return 'bg-white text-zinc-500 ring-1 ring-zinc-300 hover:ring-teal-500 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-zinc-600';
+				},
+
+				get atCap() { return this.selected.length >= this.seatLimit; },
+
+				// The server enforces this too. Enforcing it here is what stops a
+				// buyer picking eight seats and being refused all eight.
+				get seatLimit() {
+					const cap = this.maxPerBuyer > 0 ? this.maxPerBuyer : 8;
+					if (this.kind === 'ga') {
+						return Math.max(1, Math.min(cap, this.remaining === null ? cap : this.remaining));
+					}
+					return cap;
+				},
+
+				get holdCount() { return this.kind === 'seated' ? this.selected.length : this.qty; },
+				get holdTotalCents() { return this.holdCount * this.priceCents; },
+
+				get selectedSeats() {
+					const byId = new Map(this.seats.map(s => [s.id, s]));
+					return this.selected.map(id => byId.get(id)).filter(Boolean);
+				},
+
+				toggleSeat(seat) {
+					const state = this.seatState(seat);
+					if (state === 'taken' || state === 'blocked' || state === 'yours') return;
+					this.seatError = '';
+					this.autoPicked = false;
+
+					const at = this.selected.indexOf(seat.id);
+					if (at >= 0) {
+						this.selected.splice(at, 1);
+						this.qty = Math.max(1, this.selected.length);
+						this.notice = seat.label + ' removed, ' + this.selected.length + ' of ' + this.seatLimit;
+						return;
+					}
+					if (this.atCap) {
+						this.notice = 'This showing allows ' + this.seatLimit + ' seats per buyer.';
+						return;
+					}
+					this.selected.push(seat.id);
+					this.qty = this.selected.length;
+					this.notice = seat.label + ' selected, ' + this.selected.length + ' of ' + this.seatLimit;
+				},
+
+				removeSeat(id) {
+					this.selected = this.selected.filter(s => s !== id);
+					this.qty = Math.max(1, this.selected.length);
+					this.autoPicked = false;
+				},
+
+				// Pick a run of adjacent seats the way a person would: near the middle
+				// of the row, a little back from the screen, and without stranding a
+				// single seat that nobody will then want.
+				autoPick(n) {
+					const rows = this.rows;
+					let best = null;
+					rows.forEach((row, rowIndex) => {
+						const seats = row.seats;
+						for (let i = 0; i + n <= seats.length; i++) {
+							const run = seats.slice(i, i + n);
+							if (run.some(s => s.state !== 'free')) continue;
+
+							const runCentre = i + (n - 1) / 2;
+							const rowCentre = (seats.length - 1) / 2;
+							const idealRow = (rows.length - 1) * 0.6;
+							let score = 100 - Math.abs(runCentre - rowCentre) * 4 - Math.abs(rowIndex - idealRow) * 6;
+							if (this.leavesOrphan(seats, i, n)) score -= 25;
+
+							if (!best || score > best.score) best = { score: score, run: run };
+						}
+					});
+
+					if (!best) {
+						this.seatError = 'No ' + n + ' seats are free together. Pick them yourself, or try another showtime.';
+						return;
+					}
+					this.selected = best.run.map(s => s.id);
+					this.autoPicked = true;
+					this.focusId = best.run[0].id;
+					this.notice = 'Picked ' + best.run.map(s => s.label).join(', ');
+				},
+
+				// A run that leaves exactly one free seat against a taken one strands
+				// that seat: real box offices avoid it, and so does this.
+				leavesOrphan(seats, i, n) {
+					const isFree = s => s && s.state === 'free';
+					const blocked = s => !s || s.state !== 'free';
+					const before = seats[i - 1], twoBefore = seats[i - 2];
+					const after = seats[i + n], twoAfter = seats[i + n + 1];
+					return (isFree(before) && blocked(twoBefore)) || (isFree(after) && blocked(twoAfter));
+				},
+
+				setQty(n) {
+					const next = Math.max(1, Math.min(this.seatLimit, n));
+					this.qty = next;
+					if (this.kind === 'seated' && this.autoPicked) this.autoPick(next);
+				},
+
+				// Roving tabindex: the whole map is one tab stop and the arrows move
+				// inside it, which is the grid pattern assistive tech expects.
+				onSeatKey(event, seat) {
+					const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+					if (keys.indexOf(event.key) === -1) return;
+					event.preventDefault();
+
+					const rows = this.rows;
+					let r = rows.findIndex(row => row.seats.some(s => s.id === seat.id));
+					if (r < 0) return;
+					let c = rows[r].seats.findIndex(s => s.id === seat.id);
+
+					if (event.key === 'ArrowLeft') c -= 1;
+					if (event.key === 'ArrowRight') c += 1;
+					if (event.key === 'ArrowUp') r -= 1;
+					if (event.key === 'ArrowDown') r += 1;
+					if (event.key === 'Home') c = 0;
+					if (event.key === 'End') c = rows[r].seats.length - 1;
+
+					r = Math.max(0, Math.min(rows.length - 1, r));
+					c = Math.max(0, Math.min(rows[r].seats.length - 1, c));
+					const target = rows[r].seats[c];
+					if (!target) return;
+					this.focusId = target.id;
+					this.$nextTick(() => {
+						const el = document.getElementById('seat-' + target.id);
+						if (el) el.focus();
+					});
+				},
+
+				async place() {
+					if (this.holding) return;
+					if (!this.guestName.trim()) {
+						// A disabled button that never says why is its own bug: validate
+						// on the press instead.
+						this.nameError = 'Please add a name for the booking.';
+						this.$nextTick(() => {
+							const field = document.getElementById('showing-name');
+							if (field) field.focus();
+						});
+						return;
+					}
+					if (this.holdCount === 0) {
+						this.error = 'Choose at least one seat first.';
+						return;
+					}
+
+					this.holding = true;
+					this.error = '';
+					this.nameError = '';
+
+					const seated = this.kind === 'seated';
+					const labels = seated ? this.selectedSeats.map(s => s.label) : [];
+					const seatIds = this.selected.slice();
+					const url = seated
+						? '/events/' + encodeURIComponent(this.slug) + '/seats/hold'
+						: '/events/' + encodeURIComponent(this.slug) + '/tiers/' + this.tierId + '/hold';
+					const payload = seated
+						? { seat_ids: seatIds, guest_name: this.guestName, guest_email: this.guestEmail }
+						: { qty: this.qty, guest_name: this.guestName, guest_email: this.guestEmail };
+
+					try {
+						const res = await fetch(url, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+							body: JSON.stringify(payload),
+						});
+						this.noteClock(res);
+
+						if (res.status === 201) {
+							const data = await res.json();
+							// Every number here is the server's. What was asked for and
+							// what is held are not always the same.
+							this.hold = {
+								key: (data.hold_tokens || [data.hold_token])[0],
+								slug: this.slug,
+								film: this.film,
+								salon: this.salon,
+								startAt: this.startAt,
+								kind: this.kind,
+								count: seated ? data.seat_count : data.qty,
+								seatIds: seated ? seatIds : [],
+								seats: labels,
+								totalCents: data.total_cents,
+								currency: this.currency,
+								tokens: seated ? (data.hold_tokens || []) : [data.hold_token],
+								expiresAt: data.expires_at,
+							};
+							aurenorRememberHold(this.hold);
+							this.selected = [];
+							this.startCountdown();
+							if (seated) await this.loadSeats({ quiet: true });
+							return;
+						}
+
+						this.error = await this.readError(res);
+						if (res.status === 409) {
+							if (seated) await this.loadSeats({ quiet: true });
+							await this.loadEvent();
+						}
+					} catch (e) {
+						this.error = 'Could not reach the box office. Check your connection and try again.';
+					} finally {
+						this.holding = false;
+					}
+				},
+
+				// Raw handler text leaks server vocabulary at the buyer. Say what
+				// happened and what to do about it instead.
+				async readError(res) {
+					const raw = (await res.text()).trim().toLowerCase();
+					if (res.status === 403) return 'This page went stale. Reload it and try again.';
+					if (res.status === 404) return 'This showing is no longer on sale.';
+					if (res.status === 400 && raw.indexOf('too many') >= 0) {
+						return 'That is more seats than one booking can hold.';
+					}
+					if (res.status === 409 && raw.indexOf('limit') >= 0) {
+						return 'You can hold ' + this.seatLimit + ' seats per showing.';
+					}
+					if (res.status === 409) {
+						return this.kind === 'seated'
+							? 'Someone took one of those seats first. Your remaining picks are still selected.'
+							: 'There are not that many tickets left. Try a smaller number.';
+					}
+					return 'Could not hold those tickets.';
+				},
+
+				async release() {
+					if (!this.hold) return;
+					const hold = this.hold;
+					this.hold = null;
+					this.stopCountdown();
+					aurenorForgetHold(hold.key);
+					try {
+						await fetch('/events/' + encodeURIComponent(hold.slug) + '/holds/release', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+							body: JSON.stringify({ hold_tokens: hold.tokens }),
+						});
+					} catch (e) {
+						// The reaper is the backstop; nothing useful to say here.
+					}
+					await this.loadEvent();
+					if (this.kind === 'seated') await this.loadSeats({ quiet: true });
+					this.notice = 'Released. Those seats are back on sale.';
+				},
+
+				async copyTokens() {
+					if (!this.hold) return;
+					try {
+						await navigator.clipboard.writeText(this.hold.tokens.join('\n'));
+						this.copied = true;
+						setTimeout(() => { this.copied = false; }, 2000);
+					} catch (e) {
+						this.notice = 'Could not copy — select the reference and copy it by hand.';
+					}
+				},
+
+				startCountdown() {
+					this.stopCountdown();
+					this.tick();
+					this.timer = setInterval(() => this.tick(), 1000);
+				},
+
+				stopCountdown() {
+					if (this.timer) clearInterval(this.timer);
+					this.timer = null;
+					this.countdown = '';
+					this.urgency = 'calm';
+				},
+
+				tick() {
+					if (!this.hold) return this.stopCountdown();
+					const left = Date.parse(this.hold.expiresAt) - this.serverNow();
+					if (left <= 0) {
+						aurenorForgetHold(this.hold.key);
+						const seated = this.hold.kind === 'seated';
+						this.hold = null;
+						this.stopCountdown();
+						this.error = 'That hold expired. The seats go back on sale once the box office sweeps them.';
+						if (seated) this.loadSeats({ quiet: true });
+						return;
+					}
+					this.countdown = aurenorCountdown(left);
+					this.urgency = left > 300000 ? 'calm' : (left > 120000 ? 'warn' : (left > 30000 ? 'urgent' : 'critical'));
+				},
+
+				countdownClass() {
+					if (this.urgency === 'critical') return 'text-red-600 font-semibold dark:text-red-400';
+					if (this.urgency === 'urgent') return 'text-red-600 dark:text-red-400';
+					if (this.urgency === 'warn') return 'text-amber-600 dark:text-amber-400';
+					return 'text-teal-800 dark:text-teal-200';
+				},
+
+				money(cents) { return aurenorMoney(cents, this.currency); },
+
+				destroy() {
+					this.stopCountdown();
+					this.stopPolling();
+					this.closeStream();
+				},
+			}));
+		});
+	</script>
+}

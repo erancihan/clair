@@ -1,8 +1,6 @@
 package appointments
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"time"
 
@@ -37,39 +35,43 @@ func Book(db *gorm.DB, in BookInput, now time.Time) (*models.BookingAppointment,
 	if !startUTC.After(now) {
 		return nil, ErrPast
 	}
-	if err := validateOpen(db, in.Schedule, startUTC, now); err != nil {
-		return nil, err
-	}
 
 	var appt *models.BookingAppointment
-	err := db.Transaction(func(tx *gorm.DB) error {
-		slot, err := ensureSlot(tx, in.Schedule, startUTC)
-		if err != nil {
-			return err
-		}
-		inv, err := booking.EnsureInventory(tx, booking.SlotOwner(slot.ID), slot.Capacity)
-		if err != nil {
-			return err
-		}
-		if err := booking.BookDirect(tx, inv.ID, 1); err != nil {
-			return err
-		}
-		a := &models.BookingAppointment{
-			ScheduleID:  in.Schedule.ID,
-			SlotID:      slot.ID,
-			UserID:      in.UserID,
-			GuestName:   in.GuestName,
-			GuestEmail:  in.GuestEmail,
-			StartAt:     startUTC,
-			EndAt:       slot.EndAt,
-			Status:      "confirmed",
-			CancelToken: newToken(),
-		}
-		if err := tx.Create(a).Error; err != nil {
-			return err
-		}
-		appt = a
-		return nil
+	err := booking.WithWriteRetry(func() error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			// Inside the transaction, so an exception inserted between the check
+			// and the write is seen by the write.
+			if err := validateOpen(tx, in.Schedule, startUTC, now); err != nil {
+				return err
+			}
+			slot, err := ensureSlot(tx, in.Schedule, startUTC)
+			if err != nil {
+				return err
+			}
+			inv, err := booking.EnsureInventory(tx, booking.SlotOwner(slot.ID), slot.Capacity)
+			if err != nil {
+				return err
+			}
+			if err := booking.BookDirect(tx, inv.ID, 1); err != nil {
+				return err
+			}
+			a := &models.BookingAppointment{
+				ScheduleID:  in.Schedule.ID,
+				SlotID:      slot.ID,
+				UserID:      in.UserID,
+				GuestName:   in.GuestName,
+				GuestEmail:  in.GuestEmail,
+				StartAt:     startUTC,
+				EndAt:       slot.EndAt,
+				Status:      "confirmed",
+				CancelToken: booking.NewToken(),
+			}
+			if err := tx.Create(a).Error; err != nil {
+				return err
+			}
+			appt = a
+			return nil
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -99,8 +101,13 @@ func CancelByToken(db *gorm.DB, cancelToken string) error {
 
 		// If this appointment came from a paid order, refund it (mock refund) and
 		// mark the order/item refunded. Free appointments have no order item.
+		// fulfilled_id is only unique within a domain, so the order's domain is
+		// part of the match.
 		var item models.BookingOrderItem
-		if err := tx.Where("fulfilled_id = ? AND status = ?", a.ID, "fulfilled").Limit(1).Find(&item).Error; err != nil {
+		if err := tx.Joins("JOIN booking_orders o ON o.id = booking_order_items.order_id").
+			Where("booking_order_items.fulfilled_id = ? AND booking_order_items.status = ? AND o.domain = ?",
+				a.ID, "fulfilled", "appointment").
+			Limit(1).Find(&item).Error; err != nil {
 			return err
 		}
 		if item.ID != 0 {
@@ -141,55 +148,36 @@ func ensureSlot(tx *gorm.DB, sched *models.BookingSchedule, startUTC time.Time) 
 	return &out, nil
 }
 
-// validateOpen checks the requested UTC instant aligns to a rule-derived slot,
-// is inside lead-time/window, and is not blocked by an exception. Capacity is
-// NOT checked here — the atomic guard in Book handles that race-free.
-func validateOpen(db *gorm.DB, sched *models.BookingSchedule, startUTC, now time.Time) error {
+// validateOpen checks that startUTC is one of the instants the schedule
+// offers on that local day — the same generator the availability endpoint
+// uses, so the two can never disagree about a DST edge, lead time, the window
+// or an exception. Capacity is NOT checked here — the atomic guard in the
+// caller handles that race-free.
+func validateOpen(tx *gorm.DB, sched *models.BookingSchedule, startUTC, now time.Time) error {
 	loc, err := time.LoadLocation(sched.Timezone)
 	if err != nil {
 		return err
 	}
-	if startUTC.Before(now.Add(time.Duration(sched.LeadTimeMin) * time.Minute)) {
-		return ErrNotOpen
-	}
-	if startUTC.After(now.AddDate(0, 0, sched.WindowDays)) {
-		return ErrNotOpen
-	}
-
 	local := startUTC.In(loc)
-	minute := local.Hour()*60 + local.Minute()
-	wd := int(local.Weekday())
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 
 	var rules []models.BookingAvailabilityRule
-	if err := db.Where("schedule_id = ? AND weekday = ?", sched.ID, wd).Find(&rules).Error; err != nil {
+	if err := tx.Where("schedule_id = ? AND weekday = ?", sched.ID, int(day.Weekday())).Find(&rules).Error; err != nil {
 		return err
 	}
-	aligned := false
-	for _, r := range rules {
-		if minute < r.StartMin || minute+sched.SlotDurationMin > r.EndMin {
-			continue
-		}
-		if (minute-r.StartMin)%sched.SlotDurationMin == 0 {
-			aligned = true
-			break
-		}
-	}
-	if !aligned {
-		return ErrNotOpen
-	}
-
 	var exs []models.BookingAvailabilityException
-	if err := db.Where("schedule_id = ? AND date = ?", sched.ID, local.Format("2006-01-02")).Find(&exs).Error; err != nil {
+	if err := tx.Where("schedule_id = ? AND date = ?", sched.ID, day.Format("2006-01-02")).Find(&exs).Error; err != nil {
 		return err
 	}
-	if blockedByException(exs, minute, minute+sched.SlotDurationMin) {
-		return ErrNotOpen
-	}
-	return nil
-}
 
-func newToken() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	starts, err := offeredStarts(sched, rules, exs, startUTC, startUTC.Add(time.Nanosecond), now)
+	if err != nil {
+		return err
+	}
+	for _, s := range starts {
+		if s.Equal(startUTC) {
+			return nil
+		}
+	}
+	return ErrNotOpen
 }

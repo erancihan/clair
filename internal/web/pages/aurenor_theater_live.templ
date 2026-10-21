@@ -1,0 +1,269 @@
+package pages
+
+// The theater board: which films are on, and when.
+//
+// One date strip filters the whole board, because a film shows once or twice a
+// day and stacking every day down the page turns four decisions into forty. Rows
+// run full width: the meta column is fixed and narrow and the showtimes take the
+// rest, which is what actually uses the width.
+//
+// The board asks for every showing in one request and subscribes once. A request
+// or a stream per showing would be thirteen of each to draw one screen, and a
+// browser only allows about six connections per origin.
+//
+// Choosing a showtime LEAVES this page. Seat selection is a screen of its own.
+
+// theaterLive is one theater's showings board.
+templ theaterLive(v Venue) {
+	<div x-data={ theaterAttr(v) } class="space-y-6">
+		@aurenorScript()
+		@aurenorDaysScript()
+		@theaterBoardScript()
+
+		<p x-show="loading" class="text-sm text-zinc-500 dark:text-zinc-400" role="status">Loading showtimes…</p>
+		<p x-show="!loading && error" x-cloak role="alert"
+			class="text-sm text-red-600 dark:text-red-400" x-text="error"></p>
+
+		<div x-show="!loading && days.length > 0" x-cloak>
+			@aurenorDateStrip()
+		</div>
+
+		<div class="space-y-4">
+			<template x-for="film in filmsOnDay" :key="film.key">
+				<article class="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:flex-row sm:items-start sm:gap-6 sm:p-6 dark:border-zinc-800 dark:bg-zinc-800">
+					// There are no posters in this system, so the monogram is the anchor
+					// that stops a full-width row from reading as unfinished.
+					<span class="flex h-14 w-14 flex-none items-center justify-center rounded-xl bg-teal-50 text-xl font-semibold text-teal-700 dark:bg-teal-400/10 dark:text-teal-300"
+						x-text="film.initial" aria-hidden="true"></span>
+
+					<div class="sm:w-56 sm:flex-none">
+						<h3 class="text-lg font-semibold text-zinc-800 dark:text-zinc-100" x-text="film.film"></h3>
+						<p class="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400" x-text="film.salon"></p>
+						<div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+							<span class="rounded-full px-2.5 py-1 font-medium"
+								:class="film.kind === 'seated'
+									? 'bg-teal-50 text-teal-700 dark:bg-teal-400/10 dark:text-teal-300'
+									: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-700/50 dark:text-zinc-300'"
+								x-text="film.kind === 'seated' ? 'Pick your seats' : 'Open seating'"></span>
+							<span class="text-zinc-500 dark:text-zinc-400" x-text="money(film.priceCents)"></span>
+						</div>
+					</div>
+
+					<div class="flex flex-1 flex-wrap gap-2">
+						<template x-for="showing in film.showings" :key="showing.slug">
+							<a :href="showing.remaining === 0 ? null : showingHref(showing)"
+								:aria-disabled="showing.remaining === 0"
+								:aria-label="aurenorTime(showing.start_at) + ', ' + (showing.remaining === 0 ? 'sold out' : showing.remaining + ' left')"
+								:class="showing.remaining === 0
+									? 'cursor-not-allowed bg-zinc-50 text-zinc-400 line-through ring-zinc-200 dark:bg-zinc-900/40 dark:text-zinc-600 dark:ring-zinc-700'
+									: 'bg-white text-zinc-700 ring-zinc-200 hover:bg-teal-50 hover:ring-teal-500 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-teal-400/10'"
+								class="block rounded-xl px-4 py-2.5 text-center ring-1 transition">
+								<span class="block text-base font-medium tabular-nums" x-text="aurenorTime(showing.start_at)"></span>
+								<span class="block text-xs opacity-70"
+									x-text="showing.remaining === 0 ? 'sold out' : showing.remaining + ' left'"></span>
+							</a>
+						</template>
+					</div>
+				</article>
+			</template>
+		</div>
+
+		<p x-show="!loading && days.length > 0 && filmsOnDay.length === 0" x-cloak
+			class="rounded-2xl bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:bg-zinc-900/50 dark:text-zinc-400">
+			No showings on <span x-text="selectedDayLabel"></span>.
+			<button type="button" x-show="nextDayWithShowings" @click="selectDay(nextDayWithShowings)"
+				class="font-medium text-teal-600 underline dark:text-teal-400">See the next day that has some</button>
+		</p>
+
+		@myTheaterHolds()
+	</div>
+}
+
+// theaterBoardScript drives the board: one request, one stream, day filtering.
+templ theaterBoardScript() {
+	<script>
+		document.addEventListener('alpine:init', () => {
+			Alpine.data('theater', (catalog) => ({
+				catalog: catalog,
+				showings: [],
+				selectedDay: '',
+				loading: true,
+				error: '',
+				stream: null,
+				poller: null,
+
+				async init() {
+					await this.load();
+					this.loading = false;
+					// Always. The stream's first frame is the board, so an empty or
+					// failed first load is repaired by it rather than left until reload.
+					this.openStream();
+				},
+
+				slugList() {
+					return this.catalog.map(c => c.slug).join(',');
+				},
+
+				// One request for the whole board. Thirteen showings used to mean
+				// thirteen requests asking the same kind of question.
+				async load() {
+					try {
+						const res = await fetch('/events/summary?slugs=' + encodeURIComponent(this.slugList()));
+						if (!res.ok) {
+							this.error = 'No showings are on sale right now.';
+							return;
+						}
+						this.apply((await res.json()) || []);
+					} catch (e) {
+						this.error = 'Could not reach the box office.';
+					}
+				},
+
+				// One connection for the whole board, for the same reason: a browser
+				// allows about six per origin and a stream holds one for its life.
+				openStream() {
+					if (!window.EventSource) {
+						this.startPolling();
+						return;
+					}
+					const stream = new EventSource('/events/summary/stream?slugs=' + encodeURIComponent(this.slugList()));
+					this.stream = stream;
+
+					stream.onmessage = (event) => {
+						try {
+							this.apply(JSON.parse(event.data));
+						} catch (e) {
+							// A malformed frame is not worth tearing the stream down for.
+						}
+					};
+
+					// EventSource fires onerror while it is retrying as well as when it
+					// was refused. Only a refusal (503, wrong content-type) leaves it
+					// CLOSED; a dropped packet leaves it CONNECTING and it reconnects on
+					// its own. Fall back only on the refusal.
+					stream.onerror = () => {
+						if (stream.readyState !== EventSource.CLOSED) return;
+						if (this.stream === stream) this.stream = null;
+						if (!this.poller) this.startPolling();
+					};
+				},
+
+				startPolling() {
+					this.stopPolling();
+					this.poller = setInterval(() => {
+						if (!document.hidden) this.load();
+					}, 15000);
+				},
+
+				stopPolling() {
+					if (this.poller) clearInterval(this.poller);
+					this.poller = null;
+				},
+
+				apply(rows) {
+					// The catalog carries what the API does not: which salon a film
+					// plays in is set dressing, not inventory.
+					const bySlug = new Map(this.catalog.map(c => [c.slug, c]));
+					this.showings = rows
+						.map(row => Object.assign({}, bySlug.get(row.slug) || {}, row))
+						.sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at));
+					this.error = this.showings.length === 0 ? 'No showings are on sale right now.' : '';
+
+					// Keep the visitor on the day they chose; fall back to the first
+					// day that has anything.
+					const days = this.days;
+					if (!days.some(day => day.key === this.selectedDay)) {
+						this.selectedDay = days.length > 0 ? days[0].key : '';
+					}
+				},
+
+				get days() {
+					return window.aurenorDays(this.showings, 'start_at');
+				},
+
+				selectDay(key) {
+					this.selectedDay = key;
+				},
+
+				get selectedDayLabel() {
+					const day = this.days.find(d => d.key === this.selectedDay);
+					return day ? day.label : '';
+				},
+
+				get nextDayWithShowings() {
+					const day = this.days.find(d => d.items.length > 0 && d.key !== this.selectedDay);
+					return day ? day.key : '';
+				},
+
+				// A film is the unit a filmgoer decides on; the day is the filter.
+				get filmsOnDay() {
+					const day = this.days.find(d => d.key === this.selectedDay);
+					if (!day) return [];
+
+					const byFilm = new Map();
+					for (const showing of day.items) {
+						if (!byFilm.has(showing.film)) {
+							byFilm.set(showing.film, {
+								key: String(showing.film).toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+								film: showing.film,
+								initial: String(showing.film).slice(0, 1),
+								salon: showing.salon,
+								kind: showing.kind,
+								priceCents: showing.price_cents,
+								showings: [],
+							});
+						}
+						byFilm.get(showing.film).showings.push(showing);
+					}
+					return Array.from(byFilm.values());
+				},
+
+				showingHref(showing) {
+					return window.location.pathname.replace(/\/$/, '') + '/showings/' + showing.slug;
+				},
+
+				money(cents) {
+					return aurenorMoney(cents, 'USD');
+				},
+
+				destroy() {
+					this.stopPolling();
+					if (this.stream) this.stream.close();
+				},
+			}));
+		});
+	</script>
+}
+
+// myTheaterHolds is the strip under the board: what this browser holds right now.
+// A guest hold has no account behind it, so this list and the tokens in it are
+// the only record the visitor has.
+templ myTheaterHolds() {
+	<div x-data="theaterHolds" x-show="mine.length > 0" x-cloak
+		class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-800">
+		<h2 class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">My holds</h2>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+			Kept in this browser only. A hold placed on another device shows as taken here, not as yours.
+		</p>
+
+		<div class="mt-4 divide-y divide-zinc-100 dark:divide-zinc-700/60">
+			<template x-for="entry in mine" :key="entry.key">
+				<div class="flex flex-wrap items-center justify-between gap-3 py-3">
+					<div class="min-w-0">
+						<p class="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">
+							<span x-text="entry.film"></span> · <span x-text="summary(entry)"></span>
+						</p>
+						<p class="text-sm text-zinc-500 dark:text-zinc-400">
+							<span x-text="aurenorWhen(entry.startAt)"></span> ·
+							<span x-text="money(entry)"></span> ·
+							expires in <span class="tabular-nums" x-text="left(entry)"></span>
+						</p>
+					</div>
+					<button type="button" @click="release(entry)" :disabled="releasing === entry.key"
+						class="flex-none rounded-full px-3 py-1.5 text-sm font-medium text-red-600 ring-1 ring-red-200 transition hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:ring-red-400/30 dark:hover:bg-red-400/10"
+						x-text="releasing === entry.key ? 'Releasing…' : 'Release'">Release</button>
+				</div>
+			</template>
+		</div>
+	</div>
+}

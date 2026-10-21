@@ -7,7 +7,7 @@ import (
 	"time"
 
 	appt "github.com/erancihan/clair/internal/appointments"
-	kernel "github.com/erancihan/clair/internal/booking"
+	"github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database/models"
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
@@ -25,7 +25,7 @@ type bookReq struct {
 // A paid schedule is refused here rather than quietly booked for nothing: the
 // two flows differ in whether a place is committed or only held, and answering
 // the wrong one would hand out free appointments.
-func book(ctx server_context.BackEndContext) http.HandlerFunc {
+func book(ctx server_context.BackEndContext, cache *snapshotCache[[]appt.OpenSlot]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sched, ok := loadSchedule(ctx, r, r.PathValue("slug"))
 		if !ok || !sched.Active {
@@ -60,12 +60,16 @@ func book(ctx server_context.BackEndContext) http.HandlerFunc {
 			http.Error(w, "cannot book a slot in the past", http.StatusBadRequest)
 		case errors.Is(err, appt.ErrNotOpen):
 			http.Error(w, "requested time is not an open slot", http.StatusConflict)
-		case errors.Is(err, kernel.ErrSoldOut):
+		case errors.Is(err, booking.ErrSoldOut):
 			http.Error(w, "slot is full", http.StatusConflict)
 		case err != nil:
 			ctx.Logger.Error("book appointment", zap.Error(err))
 			http.Error(w, "server error", http.StatusInternalServerError)
 		default:
+			// This process just changed what is open; say so, so the next read
+			// cannot be answered from before it.
+			cache.Bump(scheduleKey(sched.ID))
+
 			writeJSON(w, http.StatusCreated, appointment)
 		}
 	}
@@ -111,7 +115,7 @@ func holdSlot(ctx server_context.BackEndContext) http.HandlerFunc {
 			http.Error(w, "cannot hold a slot in the past", http.StatusBadRequest)
 		case errors.Is(err, appt.ErrNotOpen):
 			http.Error(w, "requested time is not an open slot", http.StatusConflict)
-		case errors.Is(err, kernel.ErrSoldOut):
+		case errors.Is(err, booking.ErrSoldOut):
 			http.Error(w, "slot is no longer available", http.StatusConflict)
 		case err != nil:
 			ctx.Logger.Error("hold slot", zap.Error(err))
@@ -135,18 +139,33 @@ func holdSlot(ctx server_context.BackEndContext) http.HandlerFunc {
 // the token is the only thing that proves the caller is the person who booked.
 // It is deliberately idempotent, because the link lands in an email and gets
 // clicked more than once.
-func cancelByToken(ctx server_context.BackEndContext) http.HandlerFunc {
+//
+// The token travels in the body, not the query string: it is the whole
+// authorization, and query strings land in proxy logs and browser history.
+func cancelByToken(ctx server_context.BackEndContext, cache *snapshotCache[[]appt.OpenSlot]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := r.URL.Query().Get("token")
-		if token == "" {
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
 			http.Error(w, "token is required", http.StatusBadRequest)
 			return
 		}
+		token := body.Token
 
-		if err := appt.CancelByToken(db(ctx, r), token); err != nil {
+		// Read the appointment before cancelling it: afterwards there is nothing
+		// left to say which schedule just changed.
+		conn := db(ctx, r)
+		var appointment models.BookingAppointment
+		conn.Where("cancel_token = ?", token).Limit(1).Find(&appointment)
+
+		if err := appt.CancelByToken(conn, token); err != nil {
 			ctx.Logger.Error("cancel appointment", zap.Error(err))
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
+		}
+		if appointment.ScheduleID != 0 {
+			cache.Bump(scheduleKey(appointment.ScheduleID))
 		}
 
 		w.WriteHeader(http.StatusOK)

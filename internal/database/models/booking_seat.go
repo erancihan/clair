@@ -3,7 +3,7 @@ package models
 import "time"
 
 // BookingSeat is a distinct assigned seat in a seated tier, owning a
-// capacity-1 kernel inventory row.
+// capacity-1 engine inventory row.
 //
 // Section, RowName and Number are stored as typed columns rather than being
 // parsed back out of Label, which is what makes "two seats together" an ordinary

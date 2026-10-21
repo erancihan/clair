@@ -1,142 +1,112 @@
-# Clair - Yet Another Discord Bot Project
-Discord Bot written in GoLang. Reads from SQS and sends data to given Discord Channel.
+# Clair
+
+A personal site and the services behind it, written in Go: server-rendered pages
+(templ + Tailwind + Alpine), a couple of games, and a booking engine that runs
+the Aurenor simulations.
 
 ## Installation
+
 ### Prerequisites
-- GoLang
-- AWS Account
-- Discord Bot Token
+- Go
+- Node (for the CSS build)
+- PostgreSQL
+- Valkey (optional; the app runs without it)
 
 ### Steps
-1. Clone the repository
-2. Run `go mod tidy` to install dependencies
-3. Run `go mod vendor` to create a vendor directory
-4. Create a `.env` file in the root directory of the project
-5. Fill in the values in the `.env` file
+1. Clone the repository.
+2. `go mod download`, then `go mod vendor`, then `npm ci`.
+3. Copy `.env.example` to `.env` and fill it in.
+4. `make db-up` to start PostgreSQL and Valkey with Docker Compose.
 
 ## Usage
-### Running the Bot
-- Run bot Server
+
+### Running
+
+After `make build`, the everyday sequence is `make migrate`, `make seed` (once),
+`make run-server`, and `make run-scheduler` in a second terminal. The same
+subcommands run without a build:
+
+- The web server:
   ```bash
   go run cmd/clair/main.go server
   ```
 
-- Run bot Scheduler (for now, it just sends a message to the SQS queue)<br>
-  This is also the worker
+- The scheduler — background jobs that depend on time passing rather than on a
+  request arriving. Today that is the hold reaper, which releases reservations
+  nobody paid for:
   ```bash
   go run cmd/clair/main.go scheduler
   ```
 
-### Building the Bot
-- Build the bot<br>
-  This will create a binary in the `make-build-release` directory called `clair.bin`. This binary can be run on any system that has the same architecture as the one it was built on.
-  Similar to usage, the binary can be run with the same commands.
+- The migrator — applies the schema. Nothing else changes structure, so a
+  rebuild or a restart never rewrites tables on its own. Idempotent:
   ```bash
-  make build
+  go run cmd/clair/main.go migrate
   ```
 
+- The seeder — populates the Aurenor booking simulations. Run it after the
+  migrator. Idempotent:
+  ```bash
+  go run cmd/clair/main.go seed
+  ```
+
+- Live reload while developing:
+  ```bash
+  make dev
+  ```
+
+### Building
+
+```bash
+make build
+```
+
+Builds the CSS, runs `go generate`, and writes the binary to `./builds/clair`.
+The same binary serves every subcommand above.
+
 ### With Docker Compose
-You can build the bot locally with Docker.
+
 ```bash
-make docker
+make docker                                   # build the image as clair:latest
+docker compose -f docker-compose.dev.yaml up  # migrate, then server + scheduler
+docker compose -f docker-compose.dev.yaml --profile seed up seed   # once, to fill Aurenor
 ```
 
-System has both a server and a scheduler. To run both, you can populate your `docker-compose.yaml` file with the following:
-```yaml
-services:
-  clair-scheduler:
-    image: ghcr.io/erancihan/clair:latest
-    environment:
-      DISCORD_BOT_AUTH_KEY: <discord_bot_token>
-      DISCORD_BOT_IDENTIFIER: <discord_bot_identifier>
-      AWS_SQS_QUEUE_NAME: <aws_sqs_queue_name>
-      AWS_SQS_REGION: <aws_sqs_region>
-      AWS_ACCESS_KEY_ID: <aws_access_key_id>
-      AWS_SECRET_ACCESS_KEY: <aws_secret_access_key>
-    command: ./clair.bin scheduler
-  
-  clair-server:
-    image: ghcr.io/erancihan/clair:latest
-    depends_on:
-      - valkey
-    ports:
-      - "4000:4000"
-    volumes:
-      - ./database/folder/path:/opt/clair/database
-    env_file:
-      - .env
-    environment:
-      - NODE_ENV=production
-      - DB_FOLDER=/opt/clair/database
-    command: ./clair.bin server
-```
+`docker-compose.yaml` runs the published image from ghcr.io instead of building.
 
-Scheduler handles the SQS queue and sends messages to the Discord channel.
-Server... WIP
+## Configuration
 
-Or use the docker compose file provided in the repository.
+`.env` values, all read at startup:
+
+| Key | Optional | Description |
+|:-|:-:|:-|
+| `APP_ENV` | yes | `production` makes `SESSION_KEY` mandatory and cookies `Secure`. |
+| `SESSION_KEY` | in dev | Signing key for session cookies. Required in production. |
+| `DATABASE_URL` | | PostgreSQL connection string. |
+| `DATABASE_AUTO_MIGRATE` | yes | `true` applies the schema on every startup. Off by default: use `clair migrate` instead. |
+| `DATABASE_LOG_LEVEL` | yes | `silent`, `error`, `warn` (default) or `info` (every statement). |
+| `BOOKING_PAYMENT_WEBHOOK_SECRET` | | Shared secret the payment provider signs its webhooks with. The webhook refuses every delivery while this is unset. |
+| `SEED_HOST_EMAIL` | yes | Owner of the seeded Aurenor schedules and events. |
+| `VALKEY_HOST`, `VALKEY_PORT` | yes | Valkey connection. Unset means no Valkey. |
+| `SERVER_PORT` | yes | Defaults to 4000. |
+| `RATE_LIMIT_GUEST_RPS` | yes | Guest writes per second per client address. Defaults to 5. |
+| `RATE_LIMIT_GUEST_BURST` | yes | Guest writes a client address may make at once before the per-second rate applies. Defaults to 20. |
+| `RATE_LIMIT_STREAMS_PER_IP` | yes | Open event streams per client address. Defaults to 12. |
+| `TRUST_PROXY_HEADERS` | yes | `true` keys the limits on the first `X-Forwarded-For` hop. Set it only behind a proxy you control. Defaults to `false`. |
+| `PUBLIC_PATH` | yes | Directory served at `/public/`. Defaults to `internal/web/public`. |
+| `TEST_DATABASE_URL` | yes | Database the test suite uses when set; otherwise `DATABASE_URL`. |
+
+## Testing
+
+Tests need a running PostgreSQL and skip when `DATABASE_URL` is unset:
+
 ```bash
-docker compose up
+make db-up && make test
 ```
 
-## Bot Configuration
-### `.env` Values
-|Key                    |Optional|Value|Description|
-|:-                     |:-:     |:-   |:-         |
-|DISCORD_BOT_AUTH_KEY   |        |     |           |
-|DISCORD_BOT_IDENTIFIER |yes     |     |           |
-|AWS_SQS_QUEUE_NAME     |        |     |           |
-|AWS_SQS_REGION         |        |     |           |
-|AWS_ACCESS_KEY_ID      |        |     |           |
-|AWS_SECRET_ACCESS_KEY  |        |     |           |
+## Road map
 
-## SQS Message Structure
-### Message Body
-#### **v0**
-```json
-{
-    "Content": <string>,    // message content
-    "Embed": {
-        "Title": <string>,       // embed title
-        "Description": <string>, // embed description
-        "Image": <string>,       // image url
-        "Color": <string>,       // Hex color of the embed without `#`
-    }
-}
-```
-#### **v1**
-v1 accepts input with the same structure as [discordgo.MessageSend](https://github.com/bwmarrin/discordgo/blob/aa9af1488f6e4d39393bd4a5c85667f65f6bfad8/message.go#L228)
-```json
-{
-  "Content": "some stuff with embed stuff",
-  "Embeds": [
-    {
-      "Title": "embed title",
-      "Description": "Hey go here [link](url)",
-      "Image": {
-        "URL": "some link to image"
-      },
-      "Color": "#002200"
-    }
-  ]
-}
-
-```
-
-### Message Attributes
-- `VERSION` : string<br/>
-  The version that the message body is layed out with. Default is `0`
-
-## Road Map
-So that I won't get lost.
-- [ ] Register Flow
-- [ ] Login Flow
-- [ ] Passwords????
-- [ ] Basic user home page
-- [ ] Discord OAuth
-- [ ] Clair Admin `/slash` commands
-- [ ] Clair Webhooks
-  - [ ] GET Webhook for a Discord Channel
-    - [ ] YouTube-like ID system to map webhook to discord channel???
-  - [ ] Webhook to Discord
-  - [ ] Webhook preview for Discord
+The roadmap lives in `docs/worldbuilding/aurenor.md` (status) and
+`docs/superpowers/specs/2026-09-02-evaluation-and-roadmap-v2.md` (evidence
+and reasoning). Auth, sessions and the user model are done; the booking
+systems are built and the next work is stabilising them.

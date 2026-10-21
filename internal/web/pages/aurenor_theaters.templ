@@ -1,0 +1,26 @@
+package pages
+
+// theaterNotice is the caveat the theater pages carry: seats really are held
+// against real inventory, but capture only happens through the signed payment
+// webhook, which no browser can call.
+const theaterNotice = "Preview · seats hold for real, checkout is not wired yet"
+
+// AurenorTheaters lists the nation's movie theaters (the seat-reservation
+// system). The collection scheme lets more than one exist.
+templ AurenorTheaters() {
+	@aurenorPage("Theaters of Aurenor", "Seat reservation across the nation's movie houses. Pick a theater to see its showings.", "") {
+		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+			for _, v := range aurenorTheaters {
+				@institutionCard("/aurenor/theaters/"+v.Slug, v.Name, v.Location, v.Blurb)
+			}
+		</div>
+	}
+}
+
+// AurenorTheater is one theater's showings board, driven by the real ticketing
+// engine.
+templ AurenorTheater(v Venue) {
+	@aurenorPage(v.Name, v.Location+" — pick a showing to choose seats.", theaterNotice) {
+		@theaterLive(v)
+	}
+}

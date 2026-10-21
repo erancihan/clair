@@ -44,11 +44,20 @@ func TestMountedRoutes(t *testing.T) {
 	}{
 		{name: "home", path: "/", status: http.StatusOK, contains: "csrf-token"},
 		{name: "login page", path: "/login", status: http.StatusOK, contains: "Sign in"},
+		{name: "projects", path: "/projects", status: http.StatusOK, contains: "Projects"},
+		{name: "projects links to the Aurenor examples", path: "/projects", status: http.StatusOK, contains: "/aurenor/theaters"},
+		{name: "Aurenor theaters list", path: "/aurenor/theaters", status: http.StatusOK, contains: "Aurenor Grand Theater"},
+		{name: "Aurenor theater detail", path: "/aurenor/theaters/grand", status: http.StatusOK, contains: "Dune"},
+		{name: "unknown theater is 404", path: "/aurenor/theaters/no-such-theater", status: http.StatusNotFound},
+		{name: "Aurenor hospitals list", path: "/aurenor/hospitals", status: http.StatusOK, contains: "Solvarre General Hospital"},
+		{name: "Aurenor hospital detail", path: "/aurenor/hospitals/solvarre-general", status: http.StatusOK, contains: "Cardiology"},
+		{name: "Aurenor consulate visas", path: "/aurenor/consulate", status: http.StatusOK, contains: "Tourist Visa"},
+		{name: "Aurenor civic bureau", path: "/aurenor/bureau", status: http.StatusOK, contains: "Fingerprint Appointment"},
 		{name: "requester", path: "/requester", status: http.StatusOK},
 		{name: "games index", path: "/games/", status: http.StatusOK},
 		{name: "tic-tac-toe", path: "/games/tic-tac-toe/", status: http.StatusOK},
 		{name: "chess", path: "/games/chess/", status: http.StatusOK},
-		{name: "unknown path renders the 404 page", path: "/no-such-page", status: http.StatusOK, contains: "Page not found"},
+		{name: "unknown path is a 404", path: "/no-such-page", status: http.StatusNotFound, contains: "Page not found"},
 	}
 
 	for _, tc := range tests {

@@ -1,5 +1,5 @@
 // Package ticketing is the ticketing domain: events with GA pools and assigned
-// seats, over the shared booking reservation kernel. It never imports net/http.
+// seats, over the shared booking booking engine. It never imports net/http.
 package ticketing
 
 import (
@@ -12,10 +12,15 @@ import (
 )
 
 var (
-	// ErrInvalidSeat means a requested seat is missing or not sellable.
+	// ErrInvalidSeat means a requested seat is missing, not sellable, or not
+	// part of the event being sold.
 	ErrInvalidSeat = errors.New("ticketing: invalid or non-sellable seat")
 	// ErrInvalidTier means a tier kind is not ga|seated.
 	ErrInvalidTier = errors.New("ticketing: tier kind must be ga or seated")
+	// ErrEventClosed means the event is cancelled or its showtime has passed.
+	ErrEventClosed = errors.New("ticketing: event is not on sale")
+	// ErrMixedCurrency means one seat group priced in more than one currency.
+	ErrMixedCurrency = errors.New("ticketing: seats span more than one currency")
 )
 
 // SeatInput describes a seat to create under a seated tier.

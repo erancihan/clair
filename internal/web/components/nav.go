@@ -16,5 +16,6 @@ type NavLink struct {
 // Keep the entries in the order they should appear.
 var NavLinks = []NavLink{
 	{Href: "/", Label: "Home"},
+	{Href: "/projects", Label: "Projects"},
 	{Href: "/games", Label: "Games"},
 }

@@ -5,10 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/erancihan/clair/internal/database/models"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -16,7 +16,8 @@ import (
 // ErrHoldExpired means the hold is no longer active (expired, released, or gone).
 var ErrHoldExpired = errors.New("booking: hold expired or not active")
 
-func newToken() string {
+// NewToken returns an opaque 32-character hex handle for holds and cancel links.
+func NewToken() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
@@ -37,13 +38,16 @@ func WithWriteRetry(fn func() error) error {
 	}
 }
 
+// isRetryable reports whether err is a Postgres serialization failure (40001)
+// or deadlock (40P01), at any wrap depth. Matching on the SQLSTATE, not the
+// message, so a business error that happens to mention those digits is not
+// retried.
 func isRetryable(err error) bool {
-	if err == nil {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
 		return false
 	}
-	s := err.Error()
-	return strings.Contains(s, "40001") || strings.Contains(s, "40P01") ||
-		strings.Contains(s, "deadlock detected") || strings.Contains(s, "could not serialize")
+	return pgErr.Code == "40001" || pgErr.Code == "40P01"
 }
 
 // HoldUnitsTx soft-reserves qty units inside a caller-provided transaction.
@@ -84,17 +88,21 @@ func HoldUnitsTx(tx *gorm.DB, invID uint, qty int, owner string, orderID *uint, 
 	}
 
 	h := &models.BookingHold{
-		Token: newToken(), InventoryID: invID, Qty: qty, OwnerRef: owner,
+		Token: NewToken(), InventoryID: invID, Qty: qty, OwnerRef: owner,
 		OrderID: orderID, Purpose: purpose, ExpiresAt: now.Add(ttl), Status: "active",
 	}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(h).Error; err != nil {
 		return nil, err
 	}
 	if h.ID == 0 { // conflict → an active hold already exists for (inv, owner)
-		if err := tx.Model(&models.BookingInventory{}).
+		res := tx.Model(&models.BookingInventory{}).
 			Where("id = ? AND held >= ?", invID, qty).
-			UpdateColumn("held", gorm.Expr("held - ?", qty)).Error; err != nil {
-			return nil, err
+			UpdateColumn("held", gorm.Expr("held - ?", qty))
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil, fmt.Errorf("booking: hold on inventory %d: could not undo provisional increment", invID)
 		}
 		var existing models.BookingHold
 		if err := tx.Where("inventory_id = ? AND owner_ref = ? AND status = 'active'", invID, owner).
@@ -122,6 +130,8 @@ func HoldUnits(db *gorm.DB, invID uint, qty int, owner string, orderID *uint, tt
 // CommitTx converts a hold to booked (held--→booked++) inside a caller txn.
 // Idempotent: an already-committed token returns success. Row-locks the hold on
 // Postgres so Commit and the reaper never disagree at the expiry boundary.
+// Returns ErrSoldOut when the inventory cannot take the units (capacity was
+// reduced under the hold).
 func CommitTx(tx *gorm.DB, token string, now time.Time) (*models.BookingHold, error) {
 	q := tx
 	if tx.Dialector != nil && tx.Dialector.Name() == "postgres" {
@@ -141,8 +151,12 @@ func CommitTx(tx *gorm.DB, token string, now time.Time) (*models.BookingHold, er
 	if h.Status != "active" || !now.Before(h.ExpiresAt) {
 		return nil, ErrHoldExpired
 	}
+	// The capacity predicate is here, not only on the hold, so a `held` that
+	// drifted (a double release, a cut capacity) cannot become an oversell: the
+	// statement that writes `booked` is the one that checks. The units are
+	// leaving `held` in this same statement, so `held` is not in the sum.
 	res := tx.Model(&models.BookingInventory{}).
-		Where("id = ? AND held >= ?", h.InventoryID, h.Qty).
+		Where("id = ? AND held >= ? AND booked + blocked + ? <= capacity", h.InventoryID, h.Qty, h.Qty).
 		UpdateColumns(map[string]any{
 			"held":   gorm.Expr("held - ?", h.Qty),
 			"booked": gorm.Expr("booked + ?", h.Qty),
@@ -151,7 +165,7 @@ func CommitTx(tx *gorm.DB, token string, now time.Time) (*models.BookingHold, er
 		return nil, res.Error
 	}
 	if res.RowsAffected == 0 {
-		return nil, ErrHoldExpired
+		return nil, ErrSoldOut
 	}
 	if err := tx.Model(&h).Update("status", "committed").Error; err != nil {
 		return nil, err
@@ -177,18 +191,27 @@ const defaultOfferTTL = 10 * time.Minute
 // hold is already gone. If the released hold was itself a waitlist offer, its
 // waitlist entry is marked expired so it is not reused.
 func ReleaseTx(tx *gorm.DB, token string, now time.Time) error {
+	// FOR UPDATE, like CommitTx: the reclaim step in HoldUnitsTx releases expired
+	// holds too, and without the lock both paths read "active" and both
+	// decrement `held`. Under READ COMMITTED the locked re-read re-evaluates
+	// the status predicate, so a hold reclaimed meanwhile is simply not found.
 	var h models.BookingHold
-	err := tx.Where("token = ? AND status = 'active'", token).First(&h).Error
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("token = ? AND status = 'active'", token).First(&h).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if err := tx.Model(&models.BookingInventory{}).
+	res := tx.Model(&models.BookingInventory{}).
 		Where("id = ? AND held >= ?", h.InventoryID, h.Qty).
-		UpdateColumn("held", gorm.Expr("held - ?", h.Qty)).Error; err != nil {
-		return err
+		UpdateColumn("held", gorm.Expr("held - ?", h.Qty))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("booking: release %s: held below hold qty on inventory %d", token, h.InventoryID)
 	}
 	if err := tx.Model(&h).Update("status", "released").Error; err != nil {
 		return err
@@ -227,8 +250,11 @@ func offerToWaitlist(tx *gorm.DB, invID uint, freed int, offerTTL time.Duration,
 			return nil // no waiters → unit returns to open inventory
 		}
 		h, err := HoldUnitsTx(tx, invID, 1, entry.OwnerRef, nil, "waitlist_offer", offerTTL, now)
+		if errors.Is(err, ErrSoldOut) {
+			continue // this unit was taken between the free and the offer; try the next
+		}
 		if err != nil {
-			return nil // couldn't re-hold (shouldn't happen); leave unit open
+			return err
 		}
 		tok := h.Token
 		exp := h.ExpiresAt
@@ -263,8 +289,11 @@ func JoinWaitlist(db *gorm.DB, invID uint, ownerRef string) (*models.BookingWait
 		return nil, 0, err
 	}
 	var ahead int64
-	db.Model(&models.BookingWaitlistEntry{}).
-		Where("inventory_id = ? AND status = 'waiting' AND created_at < ?", invID, entry.CreatedAt).Count(&ahead)
+	if err := db.Model(&models.BookingWaitlistEntry{}).
+		Where("inventory_id = ? AND status = 'waiting' AND created_at < ?", invID, entry.CreatedAt).
+		Count(&ahead).Error; err != nil {
+		return nil, 0, err
+	}
 	return &entry, int(ahead) + 1, nil
 }
 
@@ -326,21 +355,28 @@ func CaptureOrder(db *gorm.DB, orderID uint, pay models.BookingPayment, now time
 }
 
 // ReapExpiredHolds releases expired active holds and expires stale pending
-// orders whose holds are all gone. Returns the number of holds released.
+// orders whose holds are all gone. Returns the number of holds released and
+// every failure it met on the way; a hold that fails to release is reported,
+// not silently retried forever.
 func ReapExpiredHolds(db *gorm.DB, now time.Time) (int, error) {
 	var holds []models.BookingHold
 	if err := db.Where("status = 'active' AND expires_at <= ?", now).Limit(500).Find(&holds).Error; err != nil {
 		return 0, err
 	}
 	released := 0
+	var errs []error
 	for _, h := range holds {
-		if err := Release(db, h.Token, now); err == nil {
-			released++
+		if err := Release(db, h.Token, now); err != nil {
+			errs = append(errs, fmt.Errorf("release %s: %w", h.Token, err))
+			continue
 		}
+		released++
 	}
-	db.Model(&models.BookingOrder{}).
+	if err := db.Model(&models.BookingOrder{}).
 		Where("status = 'pending' AND updated_at <= ?", now.Add(-30*time.Minute)).
 		Where("NOT EXISTS (SELECT 1 FROM booking_holds WHERE booking_holds.order_id = booking_orders.id AND booking_holds.status = 'active')").
-		Update("status", "expired")
-	return released, nil
+		Update("status", "expired").Error; err != nil {
+		errs = append(errs, fmt.Errorf("expire stale orders: %w", err))
+	}
+	return released, errors.Join(errs...)
 }

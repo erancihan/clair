@@ -1,7 +1,7 @@
 {
   "name": "clair",
   "version": "1.0.0",
-  "description": "Discord Bot written in GoLang. Reads from SQS and sends data to given Discord Channel.",
+  "description": "Personal site and services written in Go: web pages, games, and a booking engine.",
   "scripts": {
     "css": "gulp css",
     "dev": "gulp"

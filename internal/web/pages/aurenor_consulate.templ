@@ -1,0 +1,9 @@
+package pages
+
+// AurenorConsulate is the visa-appointment example (the appointment system). A
+// single national body, so no collection list.
+templ AurenorConsulate() {
+	@aurenorPage("Aurenor Consulate", "Visa appointments for visitors to Aurenor — same appointment engine as the hospitals, a consular vocabulary.", "") {
+		@apptGrid(ServicesFor("consulate", ""))
+	}
+}

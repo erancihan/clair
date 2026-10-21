@@ -2,8 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"net"
+	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/erancihan/clair/internal/database"
 	"github.com/erancihan/clair/internal/server"
@@ -33,9 +37,8 @@ func ServerCmd(ctx context.Context) *cobra.Command {
 			db, err := database.New(ctx)
 			if err != nil {
 				logger.Error("failed to connect database", zap.Error(err))
-				return nil
+				return err
 			}
-			// TODO: gorm defer
 
 			// ValKey configuration
 			valkey := utils.NewValKeyClient(ctx)
@@ -48,15 +51,42 @@ func ServerCmd(ctx context.Context) *cobra.Command {
 			bnd := server.NewBackEnd(ctx, logger, valkey, db)
 			srv := bnd.Server(port)
 
-			go func() {
-				_ = srv.ListenAndServe()
-			}()
+			// Bind before announcing. Serving in a goroutine and logging "started"
+			// regardless means a port already held by something else produces a
+			// process that claims to be up and answers nothing — and everything
+			// downstream believes the log.
+			listener, err := net.Listen("tcp", srv.Addr)
+			if err != nil {
+				logger.Error("failed to listen", zap.String("addr", srv.Addr), zap.Error(err))
+				return err
+			}
 
 			logger.Info("Backend server started", zap.Int("port", port))
 
-			<-ctx.Done()
+			// ErrServerClosed is the ordinary answer to Shutdown, not a failure.
+			// Anything else killed the server and has to end the command.
+			serveErr := make(chan error, 1)
+			go func() {
+				if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					serveErr <- err
+				}
+			}()
 
-			_ = srv.Shutdown(ctx)
+			select {
+			case err := <-serveErr:
+				logger.Error("server stopped", zap.Error(err))
+				return err
+			case <-ctx.Done():
+			}
+
+			// Shutdown needs a context of its own: ctx is already cancelled by the
+			// time we get here, and handing it over would abandon in-flight
+			// requests instead of draining them.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Error("shutdown", zap.Error(err))
+			}
 
 			return nil
 		},

@@ -62,7 +62,7 @@ func TestUsersEndpointRequiresAdminAndHidesPasswords(t *testing.T) {
 
 	get := func(t *testing.T, cookies []*http.Cookie) *http.Response {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/users/", nil)
+		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/users", nil)
 		req.Header.Set("Accept", "application/json")
 		for _, c := range cookies {
 			req.AddCookie(c)
@@ -141,6 +141,22 @@ func TestUsersEndpointRequiresAdminAndHidesPasswords(t *testing.T) {
 		}
 		if !strings.Contains(payload, authentication.RoleAdmin) {
 			t.Errorf("expected the listing to include the role, got: %s", payload)
+		}
+	})
+
+	t.Run("the collection path is exact, not a subtree", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/users/", nil)
+		req.Header.Set("Accept", "application/json")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		slash, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slash.Body.Close()
+		if slash.StatusCode != http.StatusNotFound {
+			t.Fatalf("/api/v1/users/ answered %d, want 404", slash.StatusCode)
 		}
 	})
 }

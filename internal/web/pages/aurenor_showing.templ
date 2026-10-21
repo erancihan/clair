@@ -1,0 +1,241 @@
+package pages
+
+import "github.com/erancihan/clair/internal/aurenor"
+
+// One showing, one screen. This is the page a showtime links to: the salon, the
+// seats, and nothing else competing for the decision.
+
+// AurenorShowing is the seat-selection screen for a single showing.
+templ AurenorShowing(v Venue, s aurenor.Showing) {
+	<div class="mt-16 sm:mt-16 sm:px-8">
+		<div class="mx-auto max-w-7xl lg:px-8">
+			<div class="relative px-4 sm:px-8 lg:px-12">
+				<div class="mx-auto max-w-3xl" x-data={ showingAttr(v, s) }>
+					@aurenorScript()
+					@showingScript()
+
+					<a href={ templ.SafeURL("/aurenor/theaters/" + v.Slug) }
+						class="inline-flex items-center gap-1.5 text-sm text-zinc-500 transition hover:text-teal-600 dark:text-zinc-400 dark:hover:text-teal-400">
+						<span aria-hidden="true">←</span> { v.Name }
+					</a>
+
+					<header class="mt-4">
+						<h1 class="text-3xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100 sm:text-4xl">{ s.Film }</h1>
+						<p class="mt-2 text-base text-zinc-600 dark:text-zinc-400">
+							{ s.Salon } · <span x-text="startLabel"></span>
+						</p>
+						<div class="mt-3 flex flex-wrap items-center gap-2 text-xs">
+							if s.Kind == "seated" {
+								<span class="rounded-full bg-teal-50 px-2.5 py-1 font-medium text-teal-700 dark:bg-teal-400/10 dark:text-teal-300">Pick your seats</span>
+							} else {
+								<span class="rounded-full bg-zinc-100 px-2.5 py-1 font-medium text-zinc-600 dark:bg-zinc-700/50 dark:text-zinc-300">Open seating · no seat map</span>
+							}
+							<span class="rounded-full bg-zinc-100 px-2.5 py-1 font-medium text-zinc-600 dark:bg-zinc-700/50 dark:text-zinc-300" x-text="money(priceCents)"></span>
+							<span class="text-zinc-400 dark:text-zinc-500" x-show="remaining !== null" x-cloak
+								x-text="remaining === 0 ? 'sold out' : remaining + ' left'"></span>
+						</div>
+					</header>
+
+					<p x-show="loadError" x-cloak role="alert"
+						class="mt-6 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300" x-text="loadError"></p>
+
+					<div x-show="!hold && !loadError" class="mt-8">
+						@showingPicker(s)
+					</div>
+
+					@showingReceipt()
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// showingPicker is the choosing half of the screen: how many, then which.
+templ showingPicker(s aurenor.Showing) {
+	<div>
+		<p class="text-sm text-zinc-600 dark:text-zinc-400">
+			Choose up to <span x-text="seatLimit"></span> seats · <span x-text="money(priceCents)"></span> each
+		</p>
+
+		// Quantity first: it is the only question an open-seating showing asks,
+		// and for a seated one it is what "pick best available" works from.
+		<div class="mt-4 flex flex-wrap items-center gap-3">
+			<span class="text-sm font-medium text-zinc-700 dark:text-zinc-200">How many seats?</span>
+			<div class="flex items-center gap-2">
+				<button type="button" @click="setQty(qty - 1)" :disabled="qty <= 1" aria-label="One fewer seat"
+					class="h-11 w-11 rounded-full border border-zinc-200 text-lg leading-none text-zinc-600 transition hover:border-teal-500 disabled:cursor-not-allowed disabled:opacity-40 sm:h-9 sm:w-9 dark:border-zinc-700 dark:text-zinc-300">−</button>
+				<span class="w-8 text-center text-lg font-medium text-zinc-800 dark:text-zinc-100" aria-live="polite" x-text="qty"></span>
+				<button type="button" @click="setQty(qty + 1)" :disabled="qty >= seatLimit" aria-label="One more seat"
+					class="h-11 w-11 rounded-full border border-zinc-200 text-lg leading-none text-zinc-600 transition hover:border-teal-500 disabled:cursor-not-allowed disabled:opacity-40 sm:h-9 sm:w-9 dark:border-zinc-700 dark:text-zinc-300">+</button>
+			</div>
+			if s.Kind == "seated" {
+				<button type="button" @click="autoPick(qty)"
+					class="rounded-full bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-200 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600">
+					Pick best available
+				</button>
+			}
+		</div>
+
+		if s.Kind == "seated" {
+			@showingSeatMap()
+		} else {
+			<p class="mt-5 rounded-2xl bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:bg-zinc-900/50 dark:text-zinc-400">
+				This screening is open seating — there are no numbered seats to choose. Pick how many tickets you want and sit where you like.
+			</p>
+		}
+
+		@showingBuyerBar()
+	</div>
+}
+
+// showingSeatMap draws the salon. It pans rather than zooms: a map shrunk to fit
+// a phone renders seats a few pixels wide, far under what a fingertip can hit,
+// so the seats stay full size and the map scrolls sideways instead.
+templ showingSeatMap() {
+	<div class="mt-6">
+		<p x-show="seatsLoading" role="status" class="text-sm text-zinc-500 dark:text-zinc-400">Loading the seat map…</p>
+		<p x-show="seatError" x-cloak role="alert" class="text-sm text-red-600 dark:text-red-400" x-text="seatError"></p>
+
+		<div class="relative -mx-4 sm:mx-0">
+			<div class="overflow-x-auto overscroll-x-contain px-4 pb-1 sm:px-0">
+				<div class="mx-auto w-max">
+					<div class="mb-4 border-b border-dashed border-zinc-300 pb-2 text-center text-[10px] uppercase tracking-[0.3em] text-zinc-400 dark:border-zinc-600 dark:text-zinc-500">
+						Screen
+					</div>
+
+					<div role="grid" aria-label="Seat map">
+						<template x-for="row in rows" :key="row.key">
+							<div role="row" class="mb-1.5 flex items-center gap-1.5">
+								<span role="rowheader"
+									class="sticky left-0 z-10 w-6 flex-none bg-white pr-1 text-xs text-zinc-400 dark:bg-zinc-900 dark:text-zinc-500"
+									x-text="row.name"></span>
+								<template x-for="seat in row.seats" :key="seat.id">
+									<button type="button" :id="'seat-' + seat.id" role="gridcell"
+										@click="toggleSeat(seat)"
+										@keydown="onSeatKey($event, seat)"
+										:tabindex="seat.id === focusId ? 0 : -1"
+										:aria-pressed="selected.includes(seat.id)"
+										:aria-disabled="seatState(seat) === 'taken' || seatState(seat) === 'blocked'"
+										:aria-label="seat.label + ', ' + stateWord(seat)"
+										:class="seatClass(seat)"
+										class="flex h-11 w-11 flex-none items-center justify-center rounded-md text-[11px] font-medium transition sm:h-8 sm:w-8"
+										x-text="seatGlyph(seat)"></button>
+								</template>
+							</div>
+						</template>
+					</div>
+				</div>
+			</div>
+			<div class="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-zinc-50 to-transparent sm:hidden dark:from-black"></div>
+		</div>
+
+		<div class="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+			<span class="flex items-center gap-1.5">
+				<span class="flex h-5 w-5 items-center justify-center rounded bg-white text-[9px] text-zinc-500 ring-1 ring-zinc-300 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-zinc-600">1</span>Free
+			</span>
+			<span class="flex items-center gap-1.5">
+				<span class="flex h-5 w-5 items-center justify-center rounded bg-teal-600 text-[9px] text-white">1</span>Selected
+			</span>
+			<span class="flex items-center gap-1.5">
+				<span class="flex h-5 w-5 items-center justify-center rounded border-2 border-dashed border-teal-600 bg-teal-50 text-[9px] text-teal-700 dark:border-teal-400 dark:bg-teal-400/10 dark:text-teal-300">1</span>Yours
+			</span>
+			<span class="flex items-center gap-1.5">
+				<span class="flex h-5 w-5 items-center justify-center rounded bg-zinc-300 text-[9px] text-zinc-500 dark:bg-zinc-600 dark:text-zinc-400">×</span>Taken
+			</span>
+			<span class="flex items-center gap-1.5">
+				<span class="flex h-5 w-5 items-center justify-center rounded border border-dashed border-zinc-300 text-[9px] text-zinc-300 dark:border-zinc-700 dark:text-zinc-700">·</span>Not for sale
+			</span>
+		</div>
+	</div>
+}
+
+// showingBuyerBar follows the buyer down the page: what they picked, what it
+// costs, and the one button that matters.
+templ showingBuyerBar() {
+	<div class="sticky bottom-0 z-10 mt-8 border-t border-zinc-200 bg-zinc-50/90 py-4 backdrop-blur dark:border-zinc-800 dark:bg-black/90">
+		<div x-show="selectedSeats.length > 0" x-cloak class="mb-2 flex flex-wrap gap-1.5">
+			<template x-for="seat in selectedSeats" :key="seat.id">
+				<button type="button" @click="removeSeat(seat.id)" :aria-label="'Remove ' + seat.label"
+					class="inline-flex items-center gap-1 rounded-full bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700 transition hover:bg-teal-100 dark:bg-teal-400/10 dark:text-teal-300">
+					<span x-text="seat.label"></span>
+					<span aria-hidden="true">×</span>
+				</button>
+			</template>
+		</div>
+
+		<p class="min-h-4 text-xs text-zinc-500 dark:text-zinc-400" aria-live="polite" x-text="notice"></p>
+
+		<div class="mt-1 grid gap-2 sm:grid-cols-2">
+			<div>
+				<label class="sr-only" for="showing-name">Your name</label>
+				<input id="showing-name" x-model="guestName" type="text" placeholder="Your name (required)"
+					:aria-invalid="nameError !== ''"
+					class="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"/>
+			</div>
+			<div>
+				<label class="sr-only" for="showing-email">Email</label>
+				<input id="showing-email" x-model="guestEmail" type="email" placeholder="Email (optional)"
+					class="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"/>
+			</div>
+		</div>
+		<p x-show="nameError" x-cloak role="alert" class="mt-1 text-xs text-red-600 dark:text-red-400" x-text="nameError"></p>
+		<p x-show="error" x-cloak role="alert" class="mt-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300" x-text="error"></p>
+
+		<div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+			<p class="text-sm text-zinc-700 dark:text-zinc-200">
+				<span x-text="holdCount"></span> of <span x-text="seatLimit"></span> ·
+				<span class="font-medium" x-text="money(holdTotalCents)"></span>
+			</p>
+			<button type="button" @click="place()" :disabled="holding"
+				class="inline-flex items-center rounded-full bg-teal-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
+				x-text="holding ? 'Holding…' : (holdCount === 1 ? 'Hold 1 seat' : 'Hold ' + holdCount + ' seats')">Hold</button>
+		</div>
+		<p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Held for 10 minutes. Nothing is charged.</p>
+	</div>
+}
+
+// showingReceipt replaces the picker once seats are held: what was reserved, how
+// long it lasts, and the reference to quote for it.
+templ showingReceipt() {
+	<div x-show="hold" x-cloak class="mt-8 rounded-3xl bg-teal-50 p-6 dark:bg-teal-400/10">
+		<h2 class="text-lg font-semibold text-teal-900 dark:text-teal-100">
+			Holding <span x-text="hold ? (hold.seats.length ? hold.seats.join(', ') : hold.count + ' tickets') : ''"></span>
+		</h2>
+		<p class="mt-1 text-sm text-teal-800/80 dark:text-teal-200/70">
+			<span x-text="hold ? hold.salon : ''"></span> ·
+			<span x-text="hold ? aurenorWhen(hold.startAt) : ''"></span> ·
+			<span x-text="hold ? money(hold.totalCents) : ''"></span>
+		</p>
+		<p class="mt-3 text-sm" :class="countdownClass()">
+			Expires in <span class="tabular-nums" x-text="countdown"></span>
+		</p>
+		<p x-show="urgency === 'critical'" x-cloak role="alert" class="mt-1 text-xs font-medium text-red-600 dark:text-red-400">
+			These seats are about to go back on sale.
+		</p>
+
+		<p class="mt-4 text-xs text-teal-800/70 dark:text-teal-200/60">
+			Checkout is not wired in this simulation, so the hold lapses instead of becoming a ticket. Nothing is charged.
+		</p>
+
+		<div class="mt-4">
+			<p class="text-xs font-medium uppercase tracking-wide text-teal-800/60 dark:text-teal-200/50">Reference</p>
+			<div class="mt-1 flex items-start gap-2">
+				<code class="min-w-0 flex-1 break-all font-mono text-[11px] text-teal-900/70 dark:text-teal-100/60"
+					x-text="hold ? hold.tokens.join(' ') : ''"></code>
+				<button type="button" @click="copyTokens()"
+					class="flex-none rounded-full bg-white/70 px-3 py-1 text-xs font-medium text-teal-800 transition hover:bg-white dark:bg-zinc-800/60 dark:text-teal-200"
+					x-text="copied ? 'Copied' : 'Copy'">Copy</button>
+			</div>
+		</div>
+
+		<div class="mt-5 flex flex-wrap items-center gap-3">
+			<button type="button" @click="release()"
+				class="rounded-full bg-white/70 px-4 py-2 text-sm font-medium text-teal-900 transition hover:bg-white dark:bg-zinc-800/60 dark:text-teal-100">
+				Release these seats
+			</button>
+			<a :href="backHref" class="text-sm text-teal-800/70 underline transition hover:text-teal-900 dark:text-teal-200/60">
+				Back to showtimes
+			</a>
+		</div>
+	</div>
+}

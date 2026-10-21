@@ -86,17 +86,18 @@ func TestHoldGA_NoOversell(t *testing.T) {
 func TestHoldSeatGroup_AllOrNothing(t *testing.T) {
 	db := ticketDB(t)
 	seats := seatedEvent(t, db, "A-1", "A-2", "A-3")
+	eventID := seatOwnerEventID(t, db, seats[0])
 	now := time.Now()
 
 	// Buyer 1 takes A-1 + A-2.
-	if _, _, err := ticketing.HoldSeatGroup(db, 0, []uint{seats[0].ID, seats[1].ID},
+	if _, _, err := ticketing.HoldSeatGroup(db, eventID, []uint{seats[0].ID, seats[1].ID},
 		ticketing.Buyer{OwnerRef: "guest:b1"}, time.Hour, now, 0); err != nil {
 		t.Fatalf("buyer1 hold: %v", err)
 	}
 
 	// Buyer 2 wants A-2 + A-3; A-2 is taken → the WHOLE group must fail and A-3
 	// must stay free (no lone seat).
-	if _, _, err := ticketing.HoldSeatGroup(db, 0, []uint{seats[1].ID, seats[2].ID},
+	if _, _, err := ticketing.HoldSeatGroup(db, eventID, []uint{seats[1].ID, seats[2].ID},
 		ticketing.Buyer{OwnerRef: "guest:b2"}, time.Hour, now, 0); err != booking.ErrSoldOut {
 		t.Fatalf("buyer2 hold: got %v, want ErrSoldOut", err)
 	}
@@ -244,9 +245,10 @@ func TestPerBuyerLimit(t *testing.T) {
 func TestCapture_Seated_CreatesTicketPerSeat(t *testing.T) {
 	db := ticketDB(t)
 	seats := seatedEvent(t, db, "A-1", "A-2")
+	eventID := seatOwnerEventID(t, db, seats[0])
 	now := time.Now()
 
-	order, _, err := ticketing.HoldSeatGroup(db, 0, []uint{seats[0].ID, seats[1].ID},
+	order, _, err := ticketing.HoldSeatGroup(db, eventID, []uint{seats[0].ID, seats[1].ID},
 		ticketing.Buyer{OwnerRef: "guest:x", Name: "Ada"}, time.Hour, now, 0)
 	if err != nil {
 		t.Fatalf("hold seats: %v", err)

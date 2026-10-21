@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
-	kernel "github.com/erancihan/clair/internal/booking"
+	engine "github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database/models"
 	"github.com/erancihan/clair/internal/server/booking"
 	"github.com/erancihan/clair/internal/server/games"
@@ -38,11 +39,9 @@ func New(ctx context.Context) (*gorm.DB, error) {
 	logger := ZapToGormLogger(zapLogger)
 	logger.SetAsDefault() // configure gorm to use our logger
 
-	// TODO: configure gorm logger level based on env variable
-
 	config := &gorm.Config{
 		PrepareStmt: true,
-		Logger:      logger.LogMode(gormlogger.Info),
+		Logger:      logger.LogMode(gormLogLevel()),
 	}
 
 	db, err := gorm.Open(postgres.Open(dsn), config)
@@ -91,7 +90,7 @@ func Migrate(db *gorm.DB) error {
 	// Inventory changes announce themselves on a Postgres channel, which is what
 	// lets a seat map stream instead of poll. It lives in the database because
 	// more than one process writes inventory.
-	if err := kernel.InstallNotifyTriggers(db); err != nil {
+	if err := engine.InstallNotifyTriggers(db); err != nil {
 		return fmt.Errorf("failed to install booking notify triggers: %w", err)
 	}
 
@@ -122,4 +121,20 @@ func MigrationModels() []any {
 	all = append(all, booking.Models()...)
 
 	return all
+}
+
+// gormLogLevel reads DATABASE_LOG_LEVEL. The default is warn: at info every
+// statement is a log line, and a seat map that streams to a hundred tabs
+// turns that into a firehose. Set info when you want to see the SQL.
+func gormLogLevel() gormlogger.LogLevel {
+	switch strings.ToLower(os.Getenv("DATABASE_LOG_LEVEL")) {
+	case "silent":
+		return gormlogger.Silent
+	case "error":
+		return gormlogger.Error
+	case "info":
+		return gormlogger.Info
+	default:
+		return gormlogger.Warn
+	}
 }

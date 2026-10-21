@@ -8,7 +8,7 @@ import "time"
 // owner FK is set.
 //
 // INVARIANT: booked + held + blocked <= capacity. It is enforced by the WHERE
-// clause of every mutation in the kernel, not by a constraint, because the guard
+// clause of every mutation in the engine, not by a constraint, because the guard
 // has to be the same statement that does the increment.
 //
 // All booking types are prefixed Booking* so GORM derives booking_* table names

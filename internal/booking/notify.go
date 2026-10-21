@@ -14,8 +14,9 @@ const NotifyChannel = "booking_inventory"
 // A trigger sees every writer, including a hand-written UPDATE, so no code path
 // can forget to announce.
 //
-// The WHEN clause keeps it quiet: only a change to what is booked, held or
-// blocked is worth telling anyone about. Postgres queues these until COMMIT, so
+// The WHEN clause keeps it quiet: only a change to what is booked, held,
+// blocked or offered (capacity) is worth telling anyone about, plus the insert
+// that brings a row into being. Postgres queues these until COMMIT, so
 // a listener never learns about a change that then rolls back.
 //
 // It is three constants rather than one blob because the app opens gorm with
@@ -56,22 +57,84 @@ CREATE TRIGGER booking_inventory_notify
 AFTER UPDATE ON booking_inventories
 FOR EACH ROW
 WHEN (
-	OLD.booked  IS DISTINCT FROM NEW.booked OR
-	OLD.held    IS DISTINCT FROM NEW.held   OR
-	OLD.blocked IS DISTINCT FROM NEW.blocked
+	OLD.booked   IS DISTINCT FROM NEW.booked   OR
+	OLD.held     IS DISTINCT FROM NEW.held     OR
+	OLD.blocked  IS DISTINCT FROM NEW.blocked  OR
+	OLD.capacity IS DISTINCT FROM NEW.capacity
 )
 EXECUTE FUNCTION booking_notify_inventory()
+`
+
+// A slot's inventory row is created the first time somebody books it, and that
+// insert is itself the change a screen showing the schedule is waiting for.
+const dropNotifyInsertTriggerDDL = `
+DROP TRIGGER IF EXISTS booking_inventory_notify_insert ON booking_inventories
+`
+
+const createNotifyInsertTriggerDDL = `
+CREATE TRIGGER booking_inventory_notify_insert
+AFTER INSERT ON booking_inventories
+FOR EACH ROW
+EXECUTE FUNCTION booking_notify_inventory()
+`
+
+// Availability is computed from rules and exceptions, not stored, so a change to
+// either changes what is bookable without any inventory moving. OLD is read on
+// DELETE because NEW is null there.
+const notifyScheduleFunctionDDL = `
+CREATE OR REPLACE FUNCTION booking_notify_schedule() RETURNS trigger AS $fn$
+DECLARE
+	sched bigint;
+BEGIN
+	IF TG_OP = 'DELETE' THEN
+		sched := OLD.schedule_id;
+	ELSE
+		sched := NEW.schedule_id;
+	END IF;
+
+	IF sched IS NOT NULL THEN
+		PERFORM pg_notify('` + NotifyChannel + `', 'schedule:' || sched);
+	END IF;
+	RETURN NULL;
+END;
+$fn$ LANGUAGE plpgsql
+`
+
+const dropRuleTriggerDDL = `DROP TRIGGER IF EXISTS booking_rule_notify ON booking_availability_rules`
+
+const createRuleTriggerDDL = `
+CREATE TRIGGER booking_rule_notify
+AFTER INSERT OR UPDATE OR DELETE ON booking_availability_rules
+FOR EACH ROW EXECUTE FUNCTION booking_notify_schedule()
+`
+
+const dropExceptionTriggerDDL = `DROP TRIGGER IF EXISTS booking_exception_notify ON booking_availability_exceptions`
+
+const createExceptionTriggerDDL = `
+CREATE TRIGGER booking_exception_notify
+AFTER INSERT OR UPDATE OR DELETE ON booking_availability_exceptions
+FOR EACH ROW EXECUTE FUNCTION booking_notify_schedule()
 `
 
 // InstallNotifyTriggers makes inventory changes announce themselves. Every
 // statement is idempotent, so it is safe to re-run; it is part of migration, not
 // of boot.
 func InstallNotifyTriggers(db *gorm.DB) error {
-	for _, stmt := range []string{notifyFunctionDDL, dropNotifyTriggerDDL, createNotifyTriggerDDL} {
+	for _, stmt := range []string{
+		notifyFunctionDDL,
+		dropNotifyTriggerDDL,
+		createNotifyTriggerDDL,
+		dropNotifyInsertTriggerDDL,
+		createNotifyInsertTriggerDDL,
+		notifyScheduleFunctionDDL,
+		dropRuleTriggerDDL,
+		createRuleTriggerDDL,
+		dropExceptionTriggerDDL,
+		createExceptionTriggerDDL,
+	} {
 		if err := db.Exec(stmt).Error; err != nil {
 			return err
 		}
 	}
-
 	return nil
 }

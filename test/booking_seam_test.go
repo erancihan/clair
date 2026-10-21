@@ -316,3 +316,24 @@ func TestBooking_GuestWorkSurvivesLogin(t *testing.T) {
 func isGuestRef(ref string) bool {
 	return len(ref) > len("guest:") && ref[:len("guest:")] == "guest:"
 }
+
+// TestPaymentWebhookRefusesUnknownProvider: the provider segment is persisted
+// on the payment row, so it has to name a provider this application knows.
+//
+// The delivery is unsigned on purpose. The same request to /mock is a 401, so a
+// 404 here can only come from the provider check, which runs first.
+func TestPaymentWebhookRefusesUnknownProvider(t *testing.T) {
+	ts, _, _ := newApptServer(t)
+	t.Setenv(booking.PaymentWebhookSecretEnv, testPaymentSecret)
+
+	body := []byte(`{"delivery_id":"d-unknown","order_id":1}`)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/webhooks/payments/evil", bytes.NewReader(body))
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown provider answered %d, want 404", resp.StatusCode)
+	}
+}

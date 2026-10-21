@@ -1,5 +1,5 @@
 // Package testsupport provides shared helpers for integration tests that need a
-// real PostgreSQL database (the app is PostgreSQL-only; the booking kernel relies
+// real PostgreSQL database (the app is PostgreSQL-only; the booking engine relies
 // on partial indexes, FOR UPDATE [SKIP LOCKED], and RETURNING).
 //
 // It reads DATABASE_URL (the repo/CI convention; CI provides a postgres:16
@@ -33,9 +33,24 @@ func dsn() string {
 func PostgresDB(t *testing.T, models ...any) *gorm.DB {
 	t.Helper()
 
+	_, db := PostgresSchema(t, models...)
+	return db
+}
+
+// PostgresSchema is PostgresDB plus the DSN that reaches the same isolated
+// schema.
+//
+// Anything that opens its own connection from DATABASE_URL — a server booted
+// inside a test — needs the DSN, not a handle. Without it such a fixture has to
+// reset the shared schema instead, which drops the tables of whatever else is
+// using that database, including the developer's own dev data.
+func PostgresSchema(t *testing.T, models ...any) (string, *gorm.DB) {
+	t.Helper()
+
 	base := dsn()
 	if base == "" {
 		t.Skip("DATABASE_URL/TEST_DATABASE_URL not set; skipping Postgres integration test")
+		return "", nil
 	}
 
 	schema := schemaName(t.Name())
@@ -54,7 +69,8 @@ func PostgresDB(t *testing.T, models ...any) *gorm.DB {
 
 	// Working connection pinned to the schema via search_path (applies to every
 	// pooled connection, so concurrent goroutines all target the same schema).
-	db, err := gorm.Open(postgres.Open(withSearchPath(base, schema)),
+	schemaDSN := withSearchPath(base, schema)
+	db, err := gorm.Open(postgres.Open(schemaDSN),
 		&gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("connect (schema): %v", err)
@@ -74,7 +90,7 @@ func PostgresDB(t *testing.T, models ...any) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	return db
+	return schemaDSN, db
 }
 
 // schemaName derives a safe, unique-per-test Postgres schema identifier.
