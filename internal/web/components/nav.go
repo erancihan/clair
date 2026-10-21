@@ -17,4 +17,5 @@ type NavLink struct {
 var NavLinks = []NavLink{
 	{Href: "/", Label: "Home"},
 	{Href: "/games", Label: "Games"},
+	{Href: "/shop", Label: "Shop"},
 }
