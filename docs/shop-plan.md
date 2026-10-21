@@ -1,157 +1,167 @@
 # Shop Front System — Implementation Plan
 
-Status: **Design / not yet implemented**
-Target branch: `claude/optimistic-rubin-wpbnbm`
+Status: **Phase 0 (seams) written, not yet verified against Postgres** (2026-10-20). Merge order and rebase notes: `docs/HANDOFF.md` on `feat/booking-systems`.
+Branch: `docs/shop-front-plan` (rebased on `master` at `a1b3215`, 2026-09-02)
+
+This revision re-grounds the plan on what has landed on `master` since it was first written.
+Section 14 lists every change from the previous revision and why. Read it first if you reviewed
+the earlier text.
 
 ## 0. Locked decisions
 
 | Decision | Choice |
 |---|---|
-| Storefront base | `/shop` |
-| CMS base | `/shop/admin` (behind auth middleware + admin role) |
-| Tenancy | Single store (one owner). Multi-vendor is a later, additive layer. |
-| Payments | Mock/manual now — orders created as `pending_payment`, with a clean `PaymentProvider` seam for Stripe later. |
-
-Everything below is written to match the existing idioms in this repo:
-`templ` views + `web.Base()` shell, the custom `router.Router` (`Group` / `Middleware`),
-the `GameService`-style handler factories (`func(ctx) http.HandlerFunc`), GORM models (the shared
-`User` in `internal/database/models`; shop models prefixed `Shop*` in their own
-`internal/shop/models`, §2.1), and Valkey via `ctx.ValKey`.
+| Storefront base | `/shop` (canonical, no trailing slash — §4.3 explains why) |
+| CMS base | `/shop/admin` (`AdminMiddleware` + `CSRF()`) |
+| Tenancy | Single store, one owner. Multi-vendor is a later additive layer. |
+| Payments | Mock/manual now. Orders are created `pending_payment`; a `PaymentProvider` seam (§3.6) is the only thing Stripe later replaces. |
+| Relationship to the booking kernel | **Independent.** The shop keeps its own `shop_*` tables for orders, stock and payment. It does not touch `BookingInventory`, holds, `BookingOrder`, the payment webhook or the fulfiller registry. (Reuse was considered and rejected 2026-09-02: the user wants the shop as a self-contained domain with zero kernel changes.) |
+| Model location | `internal/database/models/shop_*.go`, one file per model, `Shop*` type prefix — the convention `database.go` states and booking follows. No separate `sm` package. |
+| Route wiring | `internal/server/routes/shop.go` owns paths and guards; `internal/server/shop` exposes an `API` struct with one method per handler, files named `api_*.go`. This is the shape the booking domain is moving to in the parallel work. If `internal/server/routes/` has not landed when the shop's Phase 0 starts, the fallback is a games-style `shop.Mount(r, ctx)` in `internal/server/shop/mount.go` (fallback only; not in the §1.1 tree), and the route table moves to `routes/shop.go` in the same PR that lands the package. |
+| Rendering | Server-rendered `templ` pages, plain `POST` forms, Post/Redirect/Get with `303`. Alpine.js only for nice-to-haves (cart badge, quantity stepper). |
+| Not-found | Real `404` status with the `pages.NotFound()` body — for unknown products/categories/orders **and** for any unmatched path or wrong verb under `/shop/`, via a shop-owned subtree fallback (§4.3). The site's own catch-all `/` answers `200` for unknown top-level paths (`server.go`, pinned by `test/mount_seam_test.go`); without the shop fallback every unmatched `/shop/*` request, and every wrong-verb request, would land there. |
+| Identity | Consumed from `internal/server/authentication`. Cart and order ownership is `api_auth.OwnerRef` from day one; `OptionalAuthMiddleware` already runs in front of every application route. |
+| Guest cart on login | Merge via `api_auth.RegisterGuestMigrator("shop", …)`. |
+| Currency | Single-currency USD at launch. Every row still carries `Currency` + minor units. |
+| Order number | `api_auth.SecureToken()` (256-bit, URL-safe). It is the guest's only guard on `/shop/orders/{number}`. |
 
 ---
 
-## 1. How it fits the existing architecture
+## 1. How it fits `master`
 
-New/changed packages (mirrors the `games` split of domain vs. HTTP):
+`master` has settled a set of seams every domain is expected to use. The shop plugs into each of
+them with one line and otherwise lives in its own packages.
+
+| Seam | Where on `master` | Shop's one line |
+|---|---|---|
+| Route table | `server.Routes()` mounts one line per domain (`games.Mount`, `routes.MountBooking` in the parallel work) | `routes.MountShop(app, s.context)` |
+| Migration set | `database.MigrationModels()` appends one `Models()` per domain | `all = append(all, shop.Models()...)` |
+| Navigation | `components.NavLinks` slice in `internal/web/components/nav.go` | `{Href: "/shop", Label: "Shop"}` |
+| Guest hand-over | `api_auth.RegisterGuestMigrator(name, fn)` called from the domain's constructor | `api_auth.RegisterGuestMigrator("shop", …)` in `shop.NewAPI` |
+| Seed data | `clair seed` (`internal/cmd/seed.go`) — **parallel work only, not on `master`**; it seeds the Aurenor catalog | one call to `shop.Seed(db)` from the same command once it lands; until then a `clair seed-shop` subcommand (§11, Phase 2) |
+| Identity everywhere | `OptionalAuthMiddleware` on `app` in `server.Routes()` | nothing — `CurrentUser`/`OwnerRef` already work on public routes |
+
+All four one-liners touch files the parallel booking work is also editing (`server.go`,
+`database.go`, `nav.go`, `seed.go`). They are trivial to re-apply after a rebase, but they are
+the whole of the shop's conflict surface, so Phase 0 (§11) lands them first and small.
+
+> **Two `master` defects Phase 0 has to clear first.** (1) `master` at `a1b3215` does not
+> build: `internal/cmd/scheduler.go:31` calls `clair.NewEventLoop`, which no longer exists
+> (`internal/clair/` holds only `sentry.go`); `test/utils.go` imports `internal/cmd`, so the
+> whole `test` package is unbuildable. (2) `MigrateCmd` exists (`internal/cmd/migrate.go`) but
+> `internal/cmd/root.go` never calls `AddCommand(MigrateCmd(ctx))`, so `clair migrate` is not a
+> runnable command on `master`. The parallel tree touches both files (`scheduler.go`, `root.go`
+> — it registers `MigrateCmd` and `SeedCmd`); if it lands first, both are fixed for free. If
+> not, Phase 0 fixes them: they are the reason nothing else in this plan can be verified.
+
+### 1.1 Package layout
 
 ```
 internal/
 ├── database/models/
-│   └── users.go             # CHANGE: add Role field for admin gating (shared, bare `users`)
-├── shop/                    # NEW: domain layer (pure logic, no net/http)
-│   ├── models/              # NEW: Shop* models, package `models`, aliased `sm` (tables shop_*)
-│   │   └── shop.go          #   ShopCategory, ShopProduct, ShopProductImage, ShopOrder, ShopOrderItem
-│   ├── catalog.go           #   product/category queries & CRUD
-│   ├── cart.go              #   Cart type + CartStore interface
-│   ├── cart_valkey.go       #   Valkey-backed CartStore
-│   ├── cart_db.go           #   DB-backed CartStore (fallback when Valkey is nil)
-│   ├── checkout.go          #   cart -> order conversion
-│   ├── money.go             #   int64 minor-units + formatting
-│   └── slug.go              #   slugify helper
-├── server/shop/             # NEW: HTTP layer (handler factories, like server/games)
-│   ├── service.go           #   ShopService struct wiring domain + views
-│   ├── storefront.go        #   GET /shop/* public handlers
-│   ├── cart.go              #   cart add/update/remove/view
-│   ├── checkout.go          #   checkout page + submit
-│   └── admin.go             #   /shop/admin CRUD handlers (protected)
-└── web/pages/shop/          # NEW: templ views, package `shopviews`
-    ├── storefront.templ     #   landing, product list, product detail, category
-    ├── cart.templ
-    ├── checkout.templ
-    └── admin.templ          #   dashboard, product form, order list/detail
+│   ├── shop_category.go        # ShopCategory       -> shop_categories
+│   ├── shop_product.go         # ShopProduct        -> shop_products
+│   ├── shop_product_image.go   # ShopProductImage   -> shop_product_images
+│   ├── shop_cart.go            # ShopCart           -> shop_carts   (DB cart store)
+│   ├── shop_order.go           # ShopOrder          -> shop_orders
+│   └── shop_order_item.go      # ShopOrderItem      -> shop_order_items
+├── shop/                       # domain: pure logic, no net/http
+│   ├── errors.go               #   ErrEmptyCart, ErrOutOfStock, ErrUnavailable, ErrBadTransition
+│   ├── money.go                #   FormatCents
+│   ├── slug.go                 #   Slugify + UniqueSlug (collision suffixing against the DB)
+│   ├── catalog.go              #   Catalog: public queries + admin CRUD
+│   ├── cart.go                 #   Cart, CartItem, CartStore interface, NewCartStore
+│   ├── cart_valkey.go          #   Valkey-backed CartStore
+│   ├── cart_db.go              #   shop_carts-backed CartStore
+│   ├── checkout.go             #   PlaceOrder: cart -> ShopOrder in one transaction
+│   ├── order_status.go         #   allowed-transitions map + Transition
+│   ├── payment.go              #   PaymentProvider interface + ManualProvider
+│   ├── guest.go                #   MigrateGuest: merge carts, re-point pending orders
+│   └── seed.go                 #   Seed(db): idempotent demo catalog
+├── server/shop/                # HTTP layer
+│   ├── api.go                  #   API struct, NewAPI, one method per handler
+│   ├── api_http.go             #   db(), page(), notFound(), parseID(), formInt()
+│   ├── api_storefront.go       #   landing, product list, product detail, category
+│   ├── api_cart.go             #   view, add, update, remove
+│   ├── api_checkout.go         #   checkout form, submit, order confirmation
+│   ├── api_admin_products.go   #   CRUD + image upload
+│   ├── api_admin_categories.go
+│   ├── api_admin_orders.go     #   list, detail, status transition
+│   └── models.go               #   Models() for the migration set
+├── server/routes/
+│   └── shop.go                 # MountShop: paths + guards, nothing else
+└── web/pages/                  # package pages, prefixed like aurenor_*.templ
+    ├── shop_storefront.templ   #   ShopLanding, ShopProductList, ShopProductCard, ShopProductDetail, ShopCategoryPage
+    ├── shop_cart.templ         #   ShopCart
+    ├── shop_checkout.templ     #   ShopCheckout, ShopOrderConfirmation
+    └── shop_admin.templ        #   ShopAdminDashboard, ShopAdminProducts, ShopAdminProductForm,
+                                #   ShopAdminCategories, ShopAdminOrders, ShopAdminOrderDetail
 ```
 
-Domain (`internal/shop`) never imports `net/http`; HTTP handlers (`internal/server/shop`)
-translate requests, call domain, and render `shopviews.*` through `web.Base(...)`.
-This is the same separation you already have between `internal/games/*` and
-`internal/server/games/*`.
+Dependency direction, matching `master`: `database -> server/shop (Models) -> shop -> database/models`;
+`server/shop -> authentication`; `routes -> server/shop`. `internal/shop` never imports
+`net/http` or `internal/server/*`.
 
 ---
 
-## 2. Data model (GORM)
+## 2. Data model
 
-### 2.1 Coexistence & name-collision audit (booking domain)
+### 2.1 Namespace split with the booking domain
 
-A sibling design — `docs/booking-system-design.md` (branch `docs/booking-system-design`) — adds a
-booking/ticketing system to the **same single Postgres database**. It was **explicitly authored to
-coexist with this shopfront**: every booking type is prefixed `Booking*` (GORM → tables `booking_*`).
+Both domains share one PostgreSQL database and one `models` package. The prefix is the namespace:
 
-**Decision (this plan): the shop mirrors that convention.** Every shop model is prefixed `Shop*`
-(GORM → tables `shop_*`) and lives in its own `internal/shop/models` package (aliased `sm`), exactly
-paralleling booking's `bm` / `am` / `tm`. We deliberately go beyond the booking doc's assumption
-(it expected the shop to take the bare `orders` / `order_items` / `inventories` / `payments` names) —
-prefixing both domains keeps every table grep-attributable to its owner and leaves the bare generic
-names unclaimed. The booking doc picks the type-prefix approach over a scoped `NamingStrategy`
-precisely for this grep-ability; we match it so the two domains read as siblings. **No collisions on
-either axis:**
-
-- **Tables.** Shop owns the `shop_*` namespace (`shop_products`, `shop_categories`,
-  `shop_product_images`, `shop_orders`, `shop_order_items`). Booking owns `booking_*`
-  (`booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, …). Disjoint prefixes.
-- **Go types.** Shop models live in `internal/shop/models` (`package models`, alias `sm`); booking
-  models in `internal/{booking,appointments,ticketing}/models` (aliased `bm` / `am` / `tm`). Shop's
-  `sm.ShopOrder` / `sm.ShopOrderItem` and booking's `bm.BookingOrder` / `bm.BookingOrderItem` are
-  distinct identifiers in distinct import paths. The only shared model is `User`.
-
-**Authoritative table-namespace split:**
-
-| Domain | Models package | Table prefix | Example tables |
+| Domain | Type prefix | Table prefix | Files |
 |---|---|---|---|
-| Shop (this plan) | `internal/shop/models` (alias `sm`) | `shop_` | `shop_products`, `shop_categories`, `shop_product_images`, `shop_orders`, `shop_order_items` |
-| Booking kernel / appointments / ticketing | `internal/{booking,appointments,ticketing}/models` | `booking_` | `booking_orders`, `booking_inventories`, `booking_payments`, `booking_seats`, … |
-| Shared | `internal/database/models` | *(bare)* | `users` |
+| Booking kernel / appointments / ticketing | `Booking*` | `booking_*` | `models/booking_*.go` |
+| Shop | `Shop*` | `shop_*` | `models/shop_*.go` |
+| Shared | `User` | `users` | `models/users.go` |
 
-**Ownership split (reconciled with the booking design).** All the shared infrastructure has **landed
-on `master`** as standalone slices; the shop and booking both **consume** it and neither rebuilds it.
-Booking additionally owns its reservation kernel. Where each shared piece lives and who uses it:
-
-| Shared piece | Status | Where | Consumed by |
-|---|---|---|---|
-| Auth / identity / session / CSRF — roles (`user`/`admin`), `CurrentUser`, `sid`/`OwnerRef`, `AdminMiddleware`, `SecureToken` | **✅ landed (PR #15)** | `internal/server/authentication` (§7) | shop + booking consume |
-| PostgreSQL connection + merged `AutoMigrate` (single driver) | **✅ landed** | `internal/database/database.go` (§2.3) | both |
-| Valkey client validation (optional, fail-open) | **✅ landed** | `internal/utils/valkey.go` | cart accelerator, booking seat-locks |
-| Reservation kernel (`BookingInventory`/`Hold`/`Payment`, holds/TTL, capture-time commit, seats, waitlist, reaper) | Booking-owned | `internal/booking` etc. | — shop does **not** build or touch these |
-
-> **Build order (resolved).** The plan was originally written shop-first (shop *builds* the shared
-> infra), then flipped booking-first. In the end all three shared slices — **auth (PR #15)**, Postgres,
-> Valkey — landed independently, ahead of both domains. So the shop simply **consumes** them (§7, §2.3);
-> its Phase 0 is now just wiring the shared middleware onto shop routes (§11). The `OwnerRef` on-disk
-> format shipped as `user:<id>` / `guest:<sid>` — **that decision is now locked** (booking's holds/
-> orders adopt it; its `sess:abc` examples are superseded).
-
-**Coordination points (shared surfaces to align with the booking work):**
-
-1. **One database, single driver — PostgreSQL (✅ landed).** The shop and booking share one Postgres
-   `*gorm.DB`. `database.New` builds it from `DATABASE_URL` and fails fast if unset; **SQLite was
-   removed entirely** (§2.3), so there is no dev/test SQLite fallback anywhere. All tests — shop and
-   cross-domain — run against Postgres (testcontainers); see §10.1.
-2. **Unified `AutoMigrate` on the single Postgres connection (§2.3).** One merged list (`User` once,
-   `sm.*` shop models, then booking's `bm.*`/`am.*`/`tm.*`). With one driver, booking's Postgres-only
-   DDL runs unconditionally — no dialect guard.
-3. **`User.Role` + `AdminMiddleware` — ✅ landed (PR #15), shop consumes.** The shared layer ships
-   `models.User.Role` (`RoleUser`/`RoleAdmin`), `AdminMiddleware`, and `CurrentUser`/`OwnerRef` in
-   `internal/server/authentication` (§7). The shop imports them; it builds no role system, user model,
-   or session code of its own.
-4. **Routes are already disjoint.** Shop: `/shop/*`, `/shop/admin/*`. Booking: `/appointments/*`,
-   `/events/*`, `/admin/*`, `/webhooks/*`. This is exactly why we picked `/shop/admin` over
-   `/admin/shop` — it keeps the shop out of booking's top-level `/admin` group. Keep it that way.
-5. **Forward-looking (shop's §11 "later" features).** When the shop adds real payments or stock
-   reservations, keep them inside the `shop_*` namespace (`ShopPayment` → `shop_payments`,
-   `ShopInventory` → `shop_inventories`) and never reuse `booking_*`. Note that shop "inventory"
-   (product stock) is a *different concept* from `BookingInventory` (a seat/slot capacity pool);
-   today the shop sidesteps it entirely with a plain `ShopProduct.StockQty` column. If shop and
-   booking payments ever need shared logic, extract a provider interface — don't share a table.
+Shop "stock" (`ShopProduct.StockQty`) is a different concept from `BookingInventory` (a
+capacity pool with holds). They share nothing. If the shop later needs reservations or a
+payment ledger they are `ShopReservation` / `ShopPayment` inside `shop_*`, never a reuse of
+`booking_*`.
 
 ### 2.2 Models
 
-`internal/shop/models/shop.go` — `package models`, imported everywhere else in the shop as `sm`.
-Every type carries the `Shop` prefix so GORM derives `shop_*` table names (§2.1). Money is stored as
-**int64 minor units** (cents) plus a currency code — never floats. Order line items snapshot
-title/price so historical orders don't change when a product is later edited.
+Money is **int64 minor units** plus a currency code, never floats. Order lines snapshot
+title/SKU/price so an order never changes when the product is edited later. `CHECK` constraints
+follow the booking models' habit of stating invariants in the tag.
 
-> **Why the `foreignKey:` tags.** For the **has-many** sides (`Images []ShopProductImage`,
-> `Items []ShopOrderItem`) the `Shop*` type prefix breaks GORM's default FK inference — it would look
-> for `ShopProductID` / `ShopOrderID` columns — so `foreignKey:ProductID` / `foreignKey:OrderID` are
-> required to keep columns short (`product_id`, `order_id`); this is the same technique the booking
-> models use (`foreignKey:SlotID`). On the **belongs-to** `Category *ShopCategory` the tag is merely
-> explicit — GORM already infers `CategoryID` from the field name.
+Catalog rows use `gorm.Model` because soft-delete is the right delete for something order
+lines point at. (New for this domain: no booking model uses `gorm.Model` or soft-delete;
+only `User` does, and there it is paired with an explicit `ID`.) Order rows use explicit
+timestamps like `BookingOrder`: an order is never deleted, so a `DeletedAt` column would only
+be a lie about the lifecycle.
+
+> **`foreignKey:` tags.** On the has-many sides (`Images`, `Items`) the `Shop` prefix breaks
+> GORM's default inference (it would look for `ShopProductID` / `ShopOrderID`), so
+> `foreignKey:ProductID` / `foreignKey:OrderID` keep the columns short. This is also new for
+> the repo: no booking model declares a GORM association and nothing on `master` calls
+> `Preload`. Standard GORM v1.25 usage, just unprecedented here.
 
 ```go
-package models // import path: github.com/erancihan/clair/internal/shop/models (aliased sm)
+// internal/database/models/shop_category.go
+package models
 
 import "gorm.io/gorm"
 
-// ----- Catalog -----
+// ShopCategory is a node in the storefront's category tree. ParentID is nil at
+// the root. Position orders siblings.
+type ShopCategory struct {
+	gorm.Model
+	Slug        string `json:"slug"        gorm:"uniqueIndex;not null"`
+	Name        string `json:"name"        gorm:"not null"`
+	Description string `json:"description"`
+	ParentID    *uint  `json:"parent_id"   gorm:"index"`
+	Position    int    `json:"position"    gorm:"default:0"`
+}
+```
+
+```go
+// internal/database/models/shop_product.go
+package models
+
+import "gorm.io/gorm"
 
 type ShopProductStatus string
 
@@ -161,41 +171,67 @@ const (
 	ShopProductArchived  ShopProductStatus = "archived"
 )
 
-type ShopCategory struct {
-	gorm.Model
-	Slug        string `json:"slug"        gorm:"uniqueIndex;not null"`
-	Name        string `json:"name"        gorm:"not null"`
-	Description string `json:"description"`
-	ParentID    *uint  `json:"parent_id"   gorm:"index"` // self-referential tree
-	Position    int    `json:"position"    gorm:"default:0"`
-}
-
+// ShopProduct is one sellable item. Only published rows are visible on the
+// storefront; the admin sees every status. PriceCents is the price at the
+// moment of sale — the order line copies it, so editing it later never
+// rewrites history.
 type ShopProduct struct {
 	gorm.Model
 	Slug        string            `json:"slug"        gorm:"uniqueIndex;not null"`
 	Title       string            `json:"title"       gorm:"not null"`
 	Description string            `json:"description"`
-	Status      ShopProductStatus `json:"status"      gorm:"index;default:draft"`
-	PriceCents  int64             `json:"price_cents" gorm:"not null"` // minor units
-	Currency    string            `json:"currency"    gorm:"default:USD"`
+	Status      ShopProductStatus `json:"status"      gorm:"index;not null;default:draft"`
+	PriceCents  int64             `json:"price_cents" gorm:"not null;check:price_cents >= 0"`
+	Currency    string            `json:"currency"    gorm:"not null;default:USD"`
 	SKU         string            `json:"sku"         gorm:"index"`
-	StockQty    int               `json:"stock_qty"   gorm:"default:0"`
+	StockQty    int               `json:"stock_qty"   gorm:"not null;default:0;check:stock_qty >= 0"`
 	Featured    bool              `json:"featured"    gorm:"index;default:false"`
 
 	CategoryID *uint              `json:"category_id" gorm:"index"`
 	Category   *ShopCategory      `json:"category,omitempty" gorm:"foreignKey:CategoryID"`
 	Images     []ShopProductImage `json:"images,omitempty"   gorm:"foreignKey:ProductID"`
 }
+```
 
+```go
+// internal/database/models/shop_product_image.go
+package models
+
+import "gorm.io/gorm"
+
+// ShopProductImage is one uploaded image. URL is the public path the file is
+// served from (§8); Position orders the gallery, 0 is the cover.
 type ShopProductImage struct {
 	gorm.Model
-	ProductID uint   `json:"product_id" gorm:"index;not null"` // -> shop_products.id
+	ProductID uint   `json:"product_id" gorm:"index;not null"`
 	URL       string `json:"url"        gorm:"not null"`
 	Alt       string `json:"alt"`
 	Position  int    `json:"position"   gorm:"default:0"`
 }
+```
 
-// ----- Orders -----
+```go
+// internal/database/models/shop_cart.go
+package models
+
+import "time"
+
+// ShopCart is the database-backed cart store, used when Valkey is absent
+// (Valkey is optional and fails open — utils.NewValKeyClient returns nil).
+// OwnerRef is the key: "user:<id>" | "guest:<sid>", exactly as OwnerRef mints
+// it. Data is the JSON-encoded shop.Cart.
+type ShopCart struct {
+	OwnerRef  string    `gorm:"primaryKey"`
+	Data      string    `gorm:"type:text;not null"`
+	UpdatedAt time.Time `gorm:"index"` // the DB store's TTL sweep reads this (§3.3)
+}
+```
+
+```go
+// internal/database/models/shop_order.go
+package models
+
+import "time"
 
 type ShopOrderStatus string
 
@@ -206,118 +242,127 @@ const (
 	ShopOrderCancelled      ShopOrderStatus = "cancelled"
 )
 
+// ShopOrder is a placed order. Number is a 256-bit token and the only thing a
+// guest needs to see the order; OwnerRef is the reference the authentication
+// layer produces, so a guest's order can be re-pointed at an account on login.
+// Shipping fields are a snapshot at purchase time.
 type ShopOrder struct {
-	gorm.Model
-	Number   string          `json:"number" gorm:"uniqueIndex"` // high-entropy, unguessable — sole IDOR guard for guest view (§12)
-	OwnerRef string          `json:"-" gorm:"index"`            // canonical owner: "user:<id>" | "guest:<sid>" (api_auth.OwnerRef, §7.3)
-	UserID   *uint           `json:"user_id" gorm:"index"`      // denormalized convenience when authed; nil for guest
-	Email    string          `json:"email"   gorm:"index"`
-	Status   ShopOrderStatus `json:"status"  gorm:"index;default:pending_payment"`
-	Currency string          `json:"currency"`
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
-	SubtotalCents int64 `json:"subtotal_cents"`
-	ShippingCents int64 `json:"shipping_cents"`
-	TotalCents    int64 `json:"total_cents"`
+	Number   string          `json:"number"   gorm:"uniqueIndex;not null"`
+	OwnerRef string          `json:"-"        gorm:"index;not null"` // "user:<id>" | "guest:<sid>"
+	UserID   *uint           `json:"user_id"  gorm:"index"`          // nil for guest
+	Email    string          `json:"email"    gorm:"index;not null"`
+	Status   ShopOrderStatus `json:"status"   gorm:"index;not null;default:pending_payment"`
+	Currency string          `json:"currency" gorm:"not null"`
 
-	// snapshot of shipping details at purchase time
+	SubtotalCents int64 `json:"subtotal_cents" gorm:"not null"`
+	ShippingCents int64 `json:"shipping_cents" gorm:"not null;default:0"`
+	TotalCents    int64 `json:"total_cents"    gorm:"not null"`
+
 	ShipName    string `json:"ship_name"`
 	ShipAddress string `json:"ship_address"`
 	ShipCity    string `json:"ship_city"`
 	ShipPostal  string `json:"ship_postal"`
 	ShipCountry string `json:"ship_country"`
 
+	// Payment seam (§3.6). Provider names the PaymentProvider that handled the
+	// order ("manual" today); ProviderRef is whatever it handed back. PaidAt is
+	// set by the transition to paid.
+	Provider    string     `json:"provider"     gorm:"not null;default:manual"`
+	ProviderRef string     `json:"provider_ref" gorm:"index"`
+	PaidAt      *time.Time `json:"paid_at"`
+
 	Items []ShopOrderItem `json:"items,omitempty" gorm:"foreignKey:OrderID"`
 }
+```
 
+```go
+// internal/database/models/shop_order_item.go
+package models
+
+import "time"
+
+// ShopOrderItem is an immutable snapshot of one cart line at the moment the
+// order was placed. Never join back to ShopProduct for display.
 type ShopOrderItem struct {
-	gorm.Model
-	OrderID   uint   `json:"order_id"  gorm:"index;not null"` // -> shop_orders.id
-	ProductID uint   `json:"product_id" gorm:"index"`         // -> shop_products.id (may be soft-deleted later)
-	// immutable snapshot — do NOT join back to ShopProduct for display
-	Title     string `json:"title"`
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	CreatedAt time.Time `json:"created_at"`
+
+	OrderID   uint   `json:"order_id"   gorm:"index;not null"`
+	ProductID uint   `json:"product_id" gorm:"index;not null"` // may point at a soft-deleted product
+	Title     string `json:"title"      gorm:"not null"`
 	SKU       string `json:"sku"`
-	UnitCents int64  `json:"unit_cents"`
-	Quantity  int    `json:"quantity"`
-	LineCents int64  `json:"line_cents"` // UnitCents * Quantity
+	UnitCents int64  `json:"unit_cents" gorm:"not null"`
+	Quantity  int    `json:"quantity"   gorm:"not null;check:quantity >= 1"`
+	LineCents int64  `json:"line_cents" gorm:"not null"` // UnitCents * Quantity
 }
 ```
 
-Register the shop models in the single merged `AutoMigrate` inside `database.New`
-(`internal/database/database.go`) — now **PostgreSQL-only** (SQLite was removed, §2.3) — alongside
-the shared `User` and the booking models:
+### 2.3 Migration wiring
+
+Migration is an explicit step on `master` (`clair migrate`, PR #18); startup runs it only with
+`DATABASE_AUTO_MIGRATE=true`. The shop registers its tables the way every domain does:
 
 ```go
-import (
-	"github.com/erancihan/clair/internal/database/models"      // shared: User
-	sm "github.com/erancihan/clair/internal/shop/models"       // shop: Shop* -> shop_*
-	// bm/am/tm "…/internal/{booking,appointments,ticketing}/models" // booking work
-)
+// internal/server/shop/models.go
+package shop
 
-db.AutoMigrate(
-	&models.User{},          // shared, registered once
-	&sm.ShopCategory{},
-	&sm.ShopProduct{},
-	&sm.ShopProductImage{},
-	&sm.ShopOrder{},
-	&sm.ShopOrderItem{},
-	&sm.ShopCart{}, // DB-backed cart fallback (§3.3); table shop_carts
-	// … booking models registered by the booking work (bm.*, am.*, tm.*)
-)
-```
+import "github.com/erancihan/clair/internal/database/models"
 
-### 2.3 Database wiring (single PostgreSQL driver — landed)
-
-> **Landed on `master`.** The DB layer both domains ride on is done: the app was migrated to a
-> **single PostgreSQL driver** and SQLite was removed entirely (which also dropped the only CGO
-> dependency). The shop builds on this — it is no longer future work for anyone's Phase 0.
-
-`database.New` now builds one Postgres connection from `DATABASE_URL` and **fails fast** if it is
-unset. There is no driver switch and no SQLite path.
-
-```go
-import (
-	"time"
-	"gorm.io/driver/postgres"
-)
-
-func New(ctx context.Context) (*gorm.DB, error) {
-	dsn := os.Getenv("DATABASE_URL") // postgres://user:pass@host:5432/clair?sslmode=require
-	if dsn == "" {
-		return nil, errors.New("DATABASE_URL is required")
+// Models returns the GORM models the shop domain owns, for the migration set
+// composed in internal/database.
+func Models() []any {
+	return []any{
+		&models.ShopCategory{},
+		&models.ShopProduct{},
+		&models.ShopProductImage{},
+		&models.ShopCart{},
+		&models.ShopOrder{},
+		&models.ShopOrderItem{},
 	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{PrepareStmt: true /* + zap→gorm logger */})
-	if err != nil {
-		return nil, err
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, err
-	}
-	sqlDB.SetMaxOpenConns(20)
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-	return db, nil
 }
 ```
 
-**One merged `AutoMigrate` (§2.2)** — `User` once, shop `sm.*`, then booking's `bm.*`/`am.*`/`tm.*`.
-Since the only driver is Postgres, booking's Postgres-only DDL (partial-unique indexes, `CHECK`
-constraints, `FOR UPDATE`) now runs **unconditionally** — no dialect guard is needed. (The earlier
-`ifPostgres` helper existed only to keep an in-memory-SQLite test harness standing; with SQLite gone,
-it is obsolete. Tests run against Postgres — see §10.1.)
+```go
+// internal/database/database.go — MigrationModels()
+all = append(all, games.Models()...)
+all = append(all, booking.Models()...)
+all = append(all, shop.Models()...)   // + import "github.com/erancihan/clair/internal/server/shop"
+```
+
+No dialect guards: the app is PostgreSQL-only. `CHECK` constraints in the tags run as written.
 
 ---
 
 ## 3. Domain layer (`internal/shop`)
 
-### 3.1 Money (`money.go`)
+### 3.1 Errors (`errors.go`)
 
 ```go
 package shop
 
-import "fmt"
+import "errors"
 
-// FormatCents renders minor units as a human string, e.g. (1299, "USD") -> "$12.99".
+var (
+	ErrEmptyCart     = errors.New("shop: cart is empty")
+	ErrOutOfStock    = errors.New("shop: insufficient stock")
+	ErrUnavailable   = errors.New("shop: product no longer available") // unpublished/deleted since it was added
+	ErrBadTransition = errors.New("shop: illegal order status transition")
+	ErrNotFound      = errors.New("shop: not found")
+)
+```
+
+Handlers map these to HTTP: `ErrEmptyCart` → 400, `ErrOutOfStock`/`ErrUnavailable` → 409,
+`ErrBadTransition` → 400, `ErrNotFound` → 404.
+
+### 3.2 Money (`money.go`)
+
+```go
+// FormatCents renders minor units, e.g. (1299, "USD") -> "$12.99". Unmapped
+// currencies fall back to "CODE 12.99".
 func FormatCents(cents int64, currency string) string {
 	sym := map[string]string{"USD": "$", "EUR": "€", "GBP": "£", "TRY": "₺"}[currency]
 	if sym == "" {
@@ -331,24 +376,22 @@ func FormatCents(cents int64, currency string) string {
 }
 ```
 
-### 3.2 Catalog service (`catalog.go`)
+### 3.3 Slugs (`slug.go`)
 
-Thin GORM wrappers. Public queries only surface `published` products; admin uses the unfiltered
-variants.
+`Slugify(s)` lowercases, replaces non `[a-z0-9]` runs with `-`, trims. `UniqueSlug(tx, table,
+base)` returns `base`, or `base-2`, `base-3`, … — the first value with no row in `table`. The
+admin create paths call it; `Slug` stays `uniqueIndex` as the backstop against a race.
+
+### 3.4 Catalog (`catalog.go`)
+
+Thin GORM wrappers. Public queries only surface `published` rows; admin variants are unfiltered.
 
 ```go
-package shop
-
-import (
-	"context"
-
-	sm "github.com/erancihan/clair/internal/shop/models"
-	"gorm.io/gorm"
-)
-
 type Catalog struct{ db *gorm.DB }
 
 func NewCatalog(db *gorm.DB) *Catalog { return &Catalog{db: db} }
+
+func (c *Catalog) tx(ctx context.Context) *gorm.DB { return c.db.Session(&gorm.Session{Context: ctx}) }
 
 type ListParams struct {
 	CategorySlug string
@@ -356,88 +399,74 @@ type ListParams struct {
 	Page, PerPage int
 }
 
-func (c *Catalog) tx(ctx context.Context) *gorm.DB {
-	return c.db.Session(&gorm.Session{Context: ctx})
-}
+const defaultPerPage = 12
 
-// ListPublished powers /shop/products with basic filter + pagination.
-func (c *Catalog) ListPublished(ctx context.Context, p ListParams) ([]sm.ShopProduct, int64, error) {
-	if p.PerPage <= 0 {
-		p.PerPage = 12
-	}
-	if p.Page <= 0 {
-		p.Page = 1
-	}
+func (c *Catalog) ListPublished(ctx context.Context, p ListParams) ([]models.ShopProduct, int64, error) {
+	if p.PerPage <= 0 { p.PerPage = defaultPerPage }
+	if p.Page <= 0    { p.Page = 1 }
 
-	q := c.tx(ctx).Model(&sm.ShopProduct{}).Where("status = ?", sm.ShopProductPublished)
-	if p.Search != "" {
-		q = q.Where("title LIKE ?", "%"+p.Search+"%")
-	}
-	if p.CategorySlug != "" {
-		// NB: real table names are shop_* (§2.1). Prefer the association join so GORM
-		// resolves them for you: q.Joins("Category").Where("shop_categories.slug = ?", …).
-		q = q.Joins("JOIN shop_categories ON shop_categories.id = shop_products.category_id").
-			Where("shop_categories.slug = ?", p.CategorySlug)
+	// filter applies the same WHERE/JOIN to a fresh chain. Count and Find each
+	// get their own chain: a Model(...) chain is not cloned between finishers, so
+	// reusing one statement for both works on GORM v1.25 only by accident of
+	// Count restoring clauses in a defer.
+	filter := func(q *gorm.DB) *gorm.DB {
+		q = q.Model(&models.ShopProduct{}).Where("shop_products.status = ?", models.ShopProductPublished)
+		if p.Search != "" {
+			q = q.Where("shop_products.title ILIKE ?", "%"+p.Search+"%") // Postgres: case-insensitive
+		}
+		if p.CategorySlug != "" {
+			q = q.Joins("JOIN shop_categories ON shop_categories.id = shop_products.category_id").
+				Where("shop_categories.slug = ?", p.CategorySlug)
+		}
+		return q
 	}
 
 	var total int64
-	q.Count(&total)
-
-	var products []sm.ShopProduct
-	err := q.Preload("Images").
+	if err := filter(c.tx(ctx)).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var products []models.ShopProduct
+	err := filter(c.tx(ctx)).
+		Preload("Images", func(db *gorm.DB) *gorm.DB { return db.Order("position ASC") }).
+		Order("shop_products.created_at DESC").
 		Offset((p.Page - 1) * p.PerPage).Limit(p.PerPage).
-		Order("created_at DESC").Find(&products).Error
+		Find(&products).Error
 	return products, total, err
 }
 
-func (c *Catalog) BySlug(ctx context.Context, slug string) (*sm.ShopProduct, error) {
-	var p sm.ShopProduct
-	err := c.tx(ctx).Preload("Images").Preload("Category").
-		Where("slug = ? AND status = ?", slug, sm.ShopProductPublished).
-		First(&p).Error
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
+// BySlug is the storefront lookup: published only.
+func (c *Catalog) BySlug(ctx context.Context, slug string) (*models.ShopProduct, error)
+// ByID is the admin lookup: any status.
+func (c *Catalog) ByID(ctx context.Context, id uint) (*models.ShopProduct, error)
+func (c *Catalog) Featured(ctx context.Context, limit int) ([]models.ShopProduct, error)
+func (c *Catalog) Categories(ctx context.Context) ([]models.ShopCategory, error)
+func (c *Catalog) CategoryBySlug(ctx context.Context, slug string) (*models.ShopCategory, error)
 
-// Admin CRUD (unfiltered by status)
-func (c *Catalog) AdminList(ctx context.Context) ([]sm.ShopProduct, error) {
-	var ps []sm.ShopProduct
-	err := c.tx(ctx).Preload("Images").Order("updated_at DESC").Find(&ps).Error
-	return ps, err
-}
-func (c *Catalog) Create(ctx context.Context, p *sm.ShopProduct) error { return c.tx(ctx).Create(p).Error }
-func (c *Catalog) Update(ctx context.Context, p *sm.ShopProduct) error { return c.tx(ctx).Save(p).Error }
-func (c *Catalog) Delete(ctx context.Context, id uint) error {
-	return c.tx(ctx).Delete(&sm.ShopProduct{}, id).Error
-}
-
-// AddImage attaches an uploaded image to a product (used by the admin upload handler, §8).
-func (c *Catalog) AddImage(ctx context.Context, productID uint, url, alt string) error {
-	return c.tx(ctx).Create(&sm.ShopProductImage{ProductID: productID, URL: url, Alt: alt}).Error
-}
+// Admin CRUD
+func (c *Catalog) AdminList(ctx context.Context) ([]models.ShopProduct, error)
+func (c *Catalog) Create(ctx context.Context, p *models.ShopProduct) error      // assigns UniqueSlug
+func (c *Catalog) Update(ctx context.Context, p *models.ShopProduct) error
+func (c *Catalog) Delete(ctx context.Context, id uint) error                     // soft delete
+func (c *Catalog) AddImage(ctx context.Context, productID uint, url, alt string) error
+func (c *Catalog) CreateCategory(ctx context.Context, cat *models.ShopCategory) error
 ```
 
-### 3.3 Cart (`cart.go` + two stores)
+Every lookup that can miss returns `ErrNotFound` (wrapping `gorm.ErrRecordNotFound`) so handlers
+have one thing to `errors.Is`.
 
-Valkey is **optional / fail-open**: `utils.NewValKeyClient` now validates the connection at startup
-(PING) and returns **nil** when Valkey is unconfigured or unreachable (landed on `master`). So the
-cart is behind an interface and we pick the implementation at wire time — Valkey when present, the
-`shop_carts` DB store otherwise. Cart ownership follows `api_auth.OwnerRef` (`"user:<id>"` /
-`"guest:<sid>"`); see §7.3 for the soft-auth requirement and the raw-`sid` interim that avoids a
-split cart.
+### 3.5 Cart (`cart.go` + two stores)
+
+The cart is keyed on `api_auth.OwnerRef(w, r)` — `"user:<id>"` for a signed-in shopper,
+`"guest:<sid>"` otherwise. `OptionalAuthMiddleware` runs in front of every application route,
+so the reference is consistent on every cart page and a signed-in shopper never splits into a
+guest cart. Prices in the cart are a display cache: checkout re-reads every product (§3.7).
 
 ```go
-package shop
-
-import "context"
-
 type CartItem struct {
 	ProductID uint   `json:"product_id"`
 	Slug      string `json:"slug"`
 	Title     string `json:"title"`
-	SKU       string `json:"sku"` // carried so PlaceOrder can snapshot it onto ShopOrderItem
+	SKU       string `json:"sku"`
 	UnitCents int64  `json:"unit_cents"`
 	Quantity  int    `json:"quantity"`
 	ImageURL  string `json:"image_url"`
@@ -448,109 +477,25 @@ type Cart struct {
 	Items    []CartItem `json:"items"`
 }
 
-func (c *Cart) SubtotalCents() int64 {
-	var sum int64
-	for _, it := range c.Items {
-		sum += it.UnitCents * int64(it.Quantity)
-	}
-	return sum
-}
+func (c *Cart) SubtotalCents() int64
+func (c *Cart) Count() int
+// Upsert adds qty (may be negative). A resulting quantity <= 0 removes the line.
+func (c *Cart) Upsert(item CartItem, qty int)
+// Set replaces the quantity outright (0 removes). Used by /cart/update.
+func (c *Cart) Set(productID uint, qty int)
+func (c *Cart) Remove(productID uint)
 
-func (c *Cart) Count() int {
-	n := 0
-	for _, it := range c.Items {
-		n += it.Quantity
-	}
-	return n
-}
-
-// Upsert adds qty (qty may be negative). Zero/negative total removes the line.
-func (c *Cart) Upsert(item CartItem, qty int) {
-	for i := range c.Items {
-		if c.Items[i].ProductID == item.ProductID {
-			c.Items[i].Quantity += qty
-			if c.Items[i].Quantity <= 0 {
-				c.Items = append(c.Items[:i], c.Items[i+1:]...)
-			}
-			return
-		}
-	}
-	if qty > 0 {
-		item.Quantity = qty
-		c.Items = append(c.Items, item)
-	}
-}
-
+// CartStore persists carts by owner reference.
+//
+// Load returns a non-nil, possibly empty Cart whenever err == nil: a missing
+// key is not an error, so callers can Upsert without a nil check.
 type CartStore interface {
-	// Load returns a non-nil Cart (empty if none exists) whenever err == nil,
-	// so callers can Upsert without a nil check. A missing key is not an error.
-	Load(ctx context.Context, id string) (*Cart, error)
-	Save(ctx context.Context, id string, cart *Cart) error
-}
-```
-
-Valkey implementation (`cart_valkey.go`), using the `valkey-go` builder API:
-
-```go
-package shop
-
-import (
-	"context"
-	"encoding/json"
-	"time"
-
-	"github.com/valkey-io/valkey-go"
-)
-
-type valkeyCartStore struct{ client valkey.Client }
-
-func NewValkeyCartStore(c valkey.Client) CartStore { return &valkeyCartStore{client: c} }
-
-const cartTTL = 7 * 24 * time.Hour
-
-func (s *valkeyCartStore) key(id string) string { return "cart:" + id }
-
-func (s *valkeyCartStore) Load(ctx context.Context, id string) (*Cart, error) {
-	res := s.client.Do(ctx, s.client.B().Get().Key(s.key(id)).Build())
-	if err := res.Error(); err != nil {
-		if valkey.IsValkeyNil(err) {
-			return &Cart{Currency: "USD"}, nil // empty cart
-		}
-		return nil, err
-	}
-	raw, _ := res.ToString()
-	var cart Cart
-	if err := json.Unmarshal([]byte(raw), &cart); err != nil {
-		return &Cart{Currency: "USD"}, nil
-	}
-	return &cart, nil
+	Load(ctx context.Context, ownerRef string) (*Cart, error)
+	Save(ctx context.Context, ownerRef string, cart *Cart) error
+	Delete(ctx context.Context, ownerRef string) error
 }
 
-func (s *valkeyCartStore) Save(ctx context.Context, id string, cart *Cart) error {
-	data, _ := json.Marshal(cart)
-	return s.client.Do(ctx,
-		s.client.B().Set().Key(s.key(id)).Value(string(data)).
-			Ex(cartTTL).Build(),
-	).Error()
-}
-```
-
-`cart_db.go` mirrors the interface with a `sm.ShopCart` model (table **`shop_carts`** — stays inside
-the `shop_*` namespace per §2.1; add it to the merged `AutoMigrate`) so local dev works with Valkey
-off:
-
-```go
-// internal/shop/models/shop.go
-type ShopCart struct {
-	ID        string    `gorm:"primaryKey"` // the sid
-	Data      string    // JSON-encoded Cart
-	UpdatedAt time.Time
-}
-```
-
-Wire selection:
-
-```go
+// NewCartStore picks Valkey when it is up and the shop_carts table otherwise.
 func NewCartStore(v valkey.Client, db *gorm.DB) CartStore {
 	if v != nil {
 		return NewValkeyCartStore(v)
@@ -559,149 +504,504 @@ func NewCartStore(v valkey.Client, db *gorm.DB) CartStore {
 }
 ```
 
-### 3.4 Checkout (`checkout.go`)
+`cart_valkey.go`: key `shop:cart:<ownerRef>`, JSON value, `EX` 7 days, `valkey.IsValkeyNil`
+→ empty cart. `cart_db.go`: upsert into `shop_carts` keyed on `OwnerRef`; a `SweepCarts(db,
+olderThan)` helper deletes rows with `updated_at < now - 30d`, to be called from the scheduler
+later (not part of the build phases; note it in `cart_db.go` and move on).
 
-Converts a cart into a `ShopOrder` in a transaction, snapshotting each line and (optionally)
-decrementing stock. This is the seam where a real `PaymentProvider` plugs in.
+### 3.6 Payment seam (`payment.go`)
 
 ```go
-package shop
+// PaymentProvider is what a real gateway replaces. Begin is called after
+// PlaceOrder inside the same request; it returns where to send the shopper.
+type PaymentProvider interface {
+	Name() string
+	// Begin starts payment for the order and returns a URL to redirect to.
+	// A provider may return "" to mean "nothing to do, show the confirmation".
+	Begin(ctx context.Context, order *models.ShopOrder) (redirectURL string, providerRef string, err error)
+}
 
-import (
-	"context"
+// ManualProvider is the launch provider: it does nothing, the order stays
+// pending_payment, and an admin marks it paid from the CMS.
+type ManualProvider struct{}
 
-	sm "github.com/erancihan/clair/internal/shop/models"
-	"gorm.io/gorm"
-)
+func (ManualProvider) Name() string { return "manual" }
+func (ManualProvider) Begin(context.Context, *models.ShopOrder) (string, string, error) { return "", "", nil }
+```
 
+Stripe later: a `StripeProvider` creating a Checkout Session, a `ShopPayment` model, and a
+`POST /webhooks/shop/{provider}` route mounted outside every session/CSRF group, verifying with
+`api_auth.VerifyProviderSignature`. All inside `shop_*`; nothing shared with booking's webhook.
+
+### 3.7 Checkout (`checkout.go`)
+
+`PlaceOrder` converts a cart into an order in one transaction. It **re-reads every product** —
+the cart's prices and titles are only a display cache — and refuses lines whose product is no
+longer published (`ErrUnavailable`). Stock is decremented with a conditional `UPDATE`;
+`RowsAffected == 0` is the oversell signal and rolls the whole order back.
+
+```go
 type ShippingDetails struct {
 	Email, Name, Address, City, Postal, Country string
 }
 
-func PlaceOrder(ctx context.Context, db *gorm.DB, cart *Cart, s ShippingDetails, orderNumber, owner string) (*sm.ShopOrder, error) {
-	if len(cart.Items) == 0 {
+type PlaceOrderInput struct {
+	Cart     *Cart
+	Shipping ShippingDetails
+	OwnerRef string // api_auth.OwnerRef(w, r), resolved by the handler
+	UserID   *uint  // from api_auth.CurrentUser, nil for guest
+	Number   string // api_auth.SecureToken(), minted by the handler
+	Provider string // provider.Name()
+}
+
+func PlaceOrder(ctx context.Context, db *gorm.DB, in PlaceOrderInput) (*models.ShopOrder, error) {
+	if in.Cart == nil || len(in.Cart.Items) == 0 {
 		return nil, ErrEmptyCart
 	}
-
-	// owner is api_auth.OwnerRef(w, r), resolved by the checkout handler: "user:<id>" | "guest:<sid>".
-	order := &sm.ShopOrder{
-		Number: orderNumber, OwnerRef: owner, Email: s.Email, Status: sm.ShopOrderPendingPayment,
-		Currency: cart.Currency,
-		ShipName: s.Name, ShipAddress: s.Address, ShipCity: s.City,
-		ShipPostal: s.Postal, ShipCountry: s.Country,
+	order := &models.ShopOrder{
+		Number: in.Number, OwnerRef: in.OwnerRef, UserID: in.UserID,
+		Email: in.Shipping.Email, Status: models.ShopOrderPendingPayment,
+		Provider: in.Provider,
+		ShipName: in.Shipping.Name, ShipAddress: in.Shipping.Address, ShipCity: in.Shipping.City,
+		ShipPostal: in.Shipping.Postal, ShipCountry: in.Shipping.Country,
 	}
-	for _, it := range cart.Items {
-		line := it.UnitCents * int64(it.Quantity)
-		order.SubtotalCents += line
-		order.Items = append(order.Items, sm.ShopOrderItem{
-			ProductID: it.ProductID, Title: it.Title, SKU: it.SKU, UnitCents: it.UnitCents,
-			Quantity: it.Quantity, LineCents: line,
-		})
-	}
-	order.TotalCents = order.SubtotalCents + order.ShippingCents
 
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(order).Error; err != nil {
-			return err
-		}
-		// optional: decrement stock atomically, guard against oversell
-		for _, it := range cart.Items {
-			res := tx.Model(&sm.ShopProduct{}).
-				Where("id = ? AND stock_qty >= ?", it.ProductID, it.Quantity).
-				UpdateColumn("stock_qty", gorm.Expr("stock_qty - ?", it.Quantity))
+		for _, it := range in.Cart.Items {
+			// Re-price from the database; the cart is not trusted for money.
+			var p models.ShopProduct
+			res := tx.Where("id = ? AND status = ?", it.ProductID, models.ShopProductPublished).Limit(1).Find(&p)
+			if res.Error != nil {
+				return res.Error
+			}
 			if res.RowsAffected == 0 {
+				return ErrUnavailable
+			}
+			if order.Currency == "" {
+				order.Currency = p.Currency
+			}
+			dec := tx.Model(&models.ShopProduct{}).
+				Where("id = ? AND stock_qty >= ?", p.ID, it.Quantity).
+				UpdateColumn("stock_qty", gorm.Expr("stock_qty - ?", it.Quantity))
+			if dec.Error != nil {
+				return dec.Error
+			}
+			if dec.RowsAffected == 0 {
 				return ErrOutOfStock
 			}
+			line := p.PriceCents * int64(it.Quantity)
+			order.SubtotalCents += line
+			order.Items = append(order.Items, models.ShopOrderItem{
+				ProductID: p.ID, Title: p.Title, SKU: p.SKU,
+				UnitCents: p.PriceCents, Quantity: it.Quantity, LineCents: line,
+			})
 		}
-		return nil
+		order.TotalCents = order.SubtotalCents + order.ShippingCents
+		return tx.Create(order).Error
 	})
 	if err != nil {
 		return nil, err
 	}
 	return order, nil
-	// NEXT: provider.CreateCheckout(order) -> redirect URL; webhook flips status to Paid.
 }
 ```
 
-`orderNumber` is generated by the HTTP layer with `api_auth.SecureToken()` (high-entropy — it's the
-guest IDOR guard, §12) and passed in, so the domain stays deterministic and testable. `PlaceOrder` deliberately takes no `CartStore`: the
-`SubmitCheckout` handler owns the cart, so **on success it clears the cart** (`s.Carts.Save(ctx, id,
-&shop.Cart{Currency: …})` or a `Delete`) before redirecting to `/shop/orders/{number}`. That is what
-the endpoint tests assert (empty cart after checkout; a double-submit then sees an empty cart, §10.5
-row 1 / §10.6 double-submit).
+`PlaceOrder` takes no `CartStore`. The handler owns the cart: on success it calls
+`Carts.Delete(ctx, ownerRef)` **before** redirecting to `/shop/orders/{number}`. A double
+submit therefore finds an empty cart and gets `ErrEmptyCart` (§10.4, row 11).
+
+### 3.8 Order status (`order_status.go`)
+
+```go
+var allowedTransitions = map[models.ShopOrderStatus][]models.ShopOrderStatus{
+	models.ShopOrderPendingPayment: {models.ShopOrderPaid, models.ShopOrderCancelled},
+	models.ShopOrderPaid:           {models.ShopOrderFulfilled, models.ShopOrderCancelled},
+	models.ShopOrderFulfilled:      {},
+	models.ShopOrderCancelled:      {},
+}
+
+// Transition moves an order to `to` if the state machine allows it. Same-state
+// is a no-op. Moving to paid stamps PaidAt. Cancelling a pending_payment or paid
+// order restocks its lines (a fulfilled order is shipped; there is nothing to
+// put back, and the map forbids it anyway).
+func Transition(ctx context.Context, db *gorm.DB, number string, to models.ShopOrderStatus) (*models.ShopOrder, error)
+```
+
+`Transition` runs in one transaction with `SELECT … FOR UPDATE` on the order row (Postgres-only,
+same as the kernel) so two admins clicking at once cannot both restock.
+
+### 3.9 Guest hand-over (`guest.go`)
+
+```go
+// MigrateGuest merges the guest cart into the account's cart and re-points the
+// guest's still-pending orders at the account. Safe to repeat: a second run
+// finds no guest cart and matches no rows.
+func MigrateGuest(ctx context.Context, db *gorm.DB, carts CartStore, guestRef, userRef string) error {
+	guest, err := carts.Load(ctx, guestRef)
+	if err != nil {
+		return err
+	}
+	if len(guest.Items) > 0 {
+		user, err := carts.Load(ctx, userRef)
+		if err != nil {
+			return err
+		}
+		for _, it := range guest.Items {
+			user.Upsert(it, it.Quantity) // union; quantities summed
+		}
+		if user.Currency == "" {
+			user.Currency = guest.Currency
+		}
+		if err := carts.Save(ctx, userRef, user); err != nil {
+			return err
+		}
+		if err := carts.Delete(ctx, guestRef); err != nil {
+			return err
+		}
+	}
+
+	// userIDFromRef parses "user:<id>". The booking domain has the same parser but
+	// unexported in internal/server/booking, which internal/shop must not import;
+	// guest.go carries its own copy (strings.CutPrefix + ParseUint, zero rejected).
+	userID, err := userIDFromRef(userRef)
+	if err != nil {
+		return err
+	}
+	return db.WithContext(ctx).Model(&models.ShopOrder{}).
+		Where("owner_ref = ? AND status = ?", guestRef, models.ShopOrderPendingPayment).
+		Updates(map[string]any{"owner_ref": userRef, "user_id": userID}).Error
+}
+```
+
+The migrator signature the auth layer calls is `func(ctx, db, guestRef, userRef) error` — it
+has no Valkey handle. The registry is an append-only process global with no de-duplication,
+and every `Routes()` call (each `newRoutesServer(t)` in tests) constructs a new `API`, so the
+registration must be **once per process** and the closure must not capture a per-construction
+store. `shop.NewAPI` therefore registers under a `sync.Once`, captures only the long-lived
+Valkey client, and builds the store from the `db` the auth layer hands in:
+
+```go
+var registerMigratorOnce sync.Once
+
+// in NewAPI
+registerMigratorOnce.Do(func() {
+	vk := ctx.ValKey // nil when Valkey is off; long-lived otherwise
+	api_auth.RegisterGuestMigrator("shop", func(c context.Context, db *gorm.DB, guestRef, userRef string) error {
+		return shop.MigrateGuest(c, db, shop.NewCartStore(vk, db), guestRef, userRef)
+	})
+})
+```
+
+In tests Valkey is nil, so the migrator uses the login request's own `db` and never a stale
+one.
+
+Quantities are summed on merge and **not** capped at stock here: stock is enforced once, at
+checkout (§3.7), which is also where the shopper gets a message they can act on.
+
+### 3.10 Seed (`seed.go`)
+
+`Seed(db *gorm.DB) (Report, error)`: idempotent `FirstOrCreate` by slug — three categories,
+around ten published products with stock, one draft, one archived — so the storefront has
+something to show. Wired as a cobra subcommand in Phase 2. `master` has no seed command; the
+parallel tree adds `clair seed` (`internal/cmd/seed.go`, Aurenor catalog, same
+`FirstOrCreate`-by-slug shape). If that has landed, add one `shop.Seed(db)` call to it;
+otherwise register a `clair seed-shop` command and fold it in later.
 
 ---
 
-## 4. HTTP layer (`internal/server/shop`) + router wiring
+## 4. HTTP layer (`internal/server/shop`) + route table
 
-### 4.1 Service struct (`service.go`)
+### 4.1 `API` struct (`api.go`)
+
+Mirrors the booking domain's `API`: the route table lives in `routes/`, this package only
+says what each handler does.
 
 ```go
 package shop
 
-import (
-	server_context "github.com/erancihan/clair/internal/server/context"
-	"github.com/erancihan/clair/internal/shop"
-)
-
-type Service struct {
-	Catalog *shop.Catalog
-	Carts   shop.CartStore
+type API struct {
+	ctx      server_context.BackEndContext
+	catalog  *shop.Catalog
+	carts    shop.CartStore
+	provider shop.PaymentProvider
 }
 
-func New(ctx server_context.BackEndContext) *Service {
-	return &Service{
-		Catalog: shop.NewCatalog(ctx.DBConn),
-		Carts:   shop.NewCartStore(ctx.ValKey, ctx.DBConn),
+var registerMigratorOnce sync.Once
+
+func NewAPI(ctx server_context.BackEndContext) *API {
+	// A visitor who fills a cart as a guest and then signs in keeps it. Registered
+	// once per process and stateless apart from the Valkey client — see §3.9 for
+	// why a closure over this API's own store would be wrong.
+	registerMigratorOnce.Do(func() {
+		vk := ctx.ValKey
+		api_auth.RegisterGuestMigrator("shop", func(c context.Context, db *gorm.DB, guestRef, userRef string) error {
+			return shop.MigrateGuest(c, db, shop.NewCartStore(vk, db), guestRef, userRef)
+		})
+	})
+
+	return &API{
+		ctx:      ctx,
+		catalog:  shop.NewCatalog(ctx.DBConn),
+		carts:    shop.NewCartStore(ctx.ValKey, ctx.DBConn),
+		provider: shop.ManualProvider{},
 	}
+}
+
+// NotFound is the subtree fallback the route table mounts under /shop/ and
+// /shop/admin/ (§4.3): a real 404 for any path or verb nothing else claimed.
+func (a *API) NotFound() http.HandlerFunc
+
+// ---- storefront ----
+func (a *API) Landing() http.HandlerFunc
+func (a *API) ProductList() http.HandlerFunc
+func (a *API) ProductDetail() http.HandlerFunc
+func (a *API) Category() http.HandlerFunc
+
+// ---- cart ----
+func (a *API) ViewCart() http.HandlerFunc
+func (a *API) AddToCart() http.HandlerFunc
+func (a *API) UpdateCart() http.HandlerFunc
+func (a *API) RemoveFromCart() http.HandlerFunc
+
+// ---- checkout ----
+func (a *API) Checkout() http.HandlerFunc
+func (a *API) SubmitCheckout() http.HandlerFunc
+func (a *API) OrderConfirmation() http.HandlerFunc
+
+// ---- admin ----
+func (a *API) AdminDashboard() http.HandlerFunc
+func (a *API) AdminProducts() http.HandlerFunc
+func (a *API) AdminProductForm() http.HandlerFunc   // new + edit
+func (a *API) AdminProductCreate() http.HandlerFunc
+func (a *API) AdminProductUpdate() http.HandlerFunc
+func (a *API) AdminProductDelete() http.HandlerFunc
+func (a *API) AdminImageUpload() http.HandlerFunc
+func (a *API) AdminCategories() http.HandlerFunc
+func (a *API) AdminCategoryCreate() http.HandlerFunc
+func (a *API) AdminOrders() http.HandlerFunc
+func (a *API) AdminOrderDetail() http.HandlerFunc
+func (a *API) AdminOrderStatus() http.HandlerFunc
+```
+
+### 4.2 Helpers (`api_http.go`)
+
+```go
+// db binds GORM to the request context (same helper as booking's api_http.go).
+func db(ctx server_context.BackEndContext, r *http.Request) *gorm.DB
+
+// page renders body inside the site shell. PageShell mints/persists the CSRF
+// token and resolves the user menu, and it writes to w, so it runs before the
+// body — passing it as the argument gets that ordering for free.
+func page(w http.ResponseWriter, r *http.Request, title string, body templ.Component) {
+	templ.Handler(web.Base(api_auth.PageShell(w, r, title), body)).ServeHTTP(w, r)
+}
+
+// notFound answers a real 404 with the site's not-found page. The status goes
+// through templ.WithStatus: templ.Handler sets Content-Type after it writes the
+// header, so a bare w.WriteHeader(404) before ServeHTTP would drop the header.
+func notFound(w http.ResponseWriter, r *http.Request) {
+	render(w, r, http.StatusNotFound, "Not found", pages.NotFound())
+}
+
+// render is page() with an explicit status, for re-rendering a form with
+// validation errors as 400 (and for notFound above).
+func render(w http.ResponseWriter, r *http.Request, status int, title string, body templ.Component) {
+	shell := api_auth.PageShell(w, r, title) // before any body write: may set a cookie
+	templ.Handler(web.Base(shell, body), templ.WithStatus(status)).ServeHTTP(w, r)
+}
+
+func parseID(r *http.Request, name string) (uint, bool)     // as booking: 0 and garbage rejected
+func formInt(r *http.Request, name string, def int) int      // Atoi with default
+func formCents(r *http.Request, name string) (int64, error)  // "12.99" -> 1299, rejects negatives/garbage
+```
+
+Forms carry the CSRF token as a hidden field. The token is on the shell the handler already
+built, so views that contain a form take it as an argument:
+
+```go
+shell := api_auth.PageShell(w, r, "Checkout")
+templ.Handler(web.Base(shell, pages.ShopCheckout(shell.CSRFToken, cart, nil, nil))).ServeHTTP(w, r)
+```
+
+(`ShopCheckout(csrfToken string, cart *shop.Cart, errs, values map[string]string)` — the two
+maps are nil on first render and filled when re-rendering after validation, §4.6.)
+
+```templ
+<input type="hidden" name="csrf_token" value={ csrfToken }/>
+```
+
+(`api_auth.CSRFFieldName` is `"csrf_token"`; the middleware reads the header first, then the
+form field.)
+
+### 4.3 Route table (`internal/server/routes/shop.go`)
+
+Guards are the decision this file exists to make explicit, in the same four classes the booking
+table uses: public reads, guest-allowed writes (behind `CSRF()`), admin (behind
+`AdminMiddleware` + `CSRF()`). The shop has no machine route yet.
+
+> **Three `net/http` ServeMux facts that shape this table.**
+>
+> 1. **The site has a method-less catch-all `/`** (`server.go`, `mountPages`) that renders
+>    the not-found page with **200**, pinned by `test/mount_seam_test.go`. Anything the shop
+>    does not register — an unknown `/shop/*` path, a wrong verb on a registered path —
+>    falls through to it. ServeMux never answers 405 while that pattern exists, because `/`
+>    matches every method. The shop therefore mounts its **own method-less subtree
+>    fallbacks**, `/shop/` and `/shop/admin/`, that answer a real 404 (`api.NotFound()`).
+>    Wrong verbs land there too, so "wrong verb" is a **404, not 405**, everywhere under
+>    `/shop/`. The one exception is the bare `/shop`: a `POST /shop` matches neither
+>    `GET /shop` nor `/shop/` and reaches the site catch-all (200). Not worth a special case.
+> 2. **A pattern ending in `/` matches a whole subtree.** That is exactly what the fallbacks
+>    above rely on, and exactly why the landing must **not** be registered as `"GET /"`
+>    inside the group (it would be `/shop/` and shadow the fallback with a 200). The landing
+>    is registered exactly: `GET /shop` from the top-level router and `GET /shop/{$}` (`{$}`
+>    = end of path, Go 1.22+) as a redirect. Same for `/shop/admin`. That is also why the
+>    canonical URL has no trailing slash: it is the form that can be registered exactly.
+>    (The booking route table documents this trap for `/appointments/schedules/`.)
+> 3. **Exactly one space between method and path.** `router.HandleFunc` splits on the first
+>    space; `"GET  /cart"` (two spaces, e.g. for alignment) registers the pattern
+>    `/shop/ /cart` and the real URL silently hits the fallback. Don't pad.
+>
+> All 28 patterns below plus `/`, `GET /static/`, `GET /public/` were registered on a real
+> Go 1.25 mux during review: no conflict panics; `/shop`, `/shop/{$}`, `/shop/`,
+> `/shop/products…`, `/shop/admin…` are all disjoint by precedence.
+
+```go
+package routes
+
+// MountShop registers every route the shop domain owns.
+func MountShop(r *router.Router, ctx server_context.BackEndContext) {
+	api := shop.NewAPI(ctx)
+
+	// Canonical landing is the bare /shop, registered from the top level so it
+	// lands on an exact pattern (see the ServeMux note above). /shop/ redirects.
+	r.HandleFunc("GET /shop", api.Landing())
+	r.HandleFunc("GET /shop/{$}", redirectTo("/shop"))
+
+	r.Group("shop", func(store *router.Router) {
+		// Subtree fallback: a real 404 for any path or verb under /shop/ nothing
+		// below claims. Without it those requests reach the site's "/" catch-all
+		// and come back 200. Method-less on purpose.
+		store.HandleFunc("/", api.NotFound())
+
+		// ---- public reads ----
+		store.HandleFunc("GET /products", api.ProductList())
+		store.HandleFunc("GET /products/{slug}", api.ProductDetail())
+		store.HandleFunc("GET /categories/{slug}", api.Category())
+		store.HandleFunc("GET /cart", api.ViewCart())
+		store.HandleFunc("GET /checkout", api.Checkout())
+		store.HandleFunc("GET /orders/{number}", api.OrderConfirmation())
+
+		// ---- guest-allowed writes ----
+		// Ownership follows api_auth.OwnerRef: the account when there is one,
+		// the per-browser guest reference otherwise. Guest checkout is a locked
+		// decision, so none of this sits behind AuthMiddleware.
+		store.Group("", func(guest *router.Router) {
+			guest.HandleFunc("POST /cart/add", api.AddToCart())
+			guest.HandleFunc("POST /cart/update", api.UpdateCart())
+			guest.HandleFunc("POST /cart/remove", api.RemoveFromCart())
+			guest.HandleFunc("POST /checkout", api.SubmitCheckout())
+		}, api_auth.CSRF())
+
+		// ---- admin: the CMS ----
+		// CSRF sits alongside AdminMiddleware, not instead of it: the session
+		// cookie is sent cross-site too. The dashboard is registered exactly
+		// (/shop/admin) for the subtree reason above; /shop/admin/ redirects.
+		// Both exact patterns carry the same guards as the group.
+		guarded := store.Middleware(api_auth.AdminMiddleware(ctx), api_auth.CSRF())
+		guarded.HandleFunc("GET /admin", api.AdminDashboard())
+		guarded.HandleFunc("GET /admin/{$}", redirectTo("/shop/admin"))
+		store.Group("admin", func(admin *router.Router) {
+			// Guarded subtree fallback: an unknown /shop/admin/* path still runs
+			// AdminMiddleware (302/401/403) and only then 404s — the existence of
+			// admin routes is not something an anonymous probe gets to learn.
+			admin.HandleFunc("/", api.NotFound())
+
+			admin.HandleFunc("GET /products", api.AdminProducts())
+			admin.HandleFunc("GET /products/new", api.AdminProductForm())
+			admin.HandleFunc("POST /products", api.AdminProductCreate())
+			admin.HandleFunc("GET /products/{id}/edit", api.AdminProductForm())
+			admin.HandleFunc("POST /products/{id}", api.AdminProductUpdate())
+			admin.HandleFunc("POST /products/{id}/delete", api.AdminProductDelete())
+
+			admin.HandleFunc("GET /categories", api.AdminCategories())
+			admin.HandleFunc("POST /categories", api.AdminCategoryCreate())
+
+			admin.HandleFunc("GET /orders", api.AdminOrders())
+			admin.HandleFunc("GET /orders/{number}", api.AdminOrderDetail())
+			admin.HandleFunc("POST /orders/{number}/status", api.AdminOrderStatus())
+		}, api_auth.AdminMiddleware(ctx), api_auth.CSRF())
+
+		// Image upload: the body cap has to sit OUTSIDE CSRF(). With no
+		// X-CSRF-Token header, CSRF() reads the form field via PostFormValue,
+		// which parses the whole multipart body (32 MB in-memory threshold, rest
+		// spilled to temp files) before any handler runs. A cap applied inside
+		// the handler would be dead code. Group middleware appends after the
+		// parent's, so the cap is registered from store.Middleware with the
+		// guards listed after it: cap outermost, then admin, then CSRF.
+		store.Middleware(maxBody(maxUploadBytes), api_auth.AdminMiddleware(ctx), api_auth.CSRF()).
+			HandleFunc("POST /admin/products/{id}/images", api.AdminImageUpload())
+	})
 }
 ```
 
-### 4.2 A storefront handler (`storefront.go`)
+`maxBody(n)` is a small middleware in `routes/`: answer **413** at once when
+`r.ContentLength > n` (browsers always send it for multipart), and wrap `r.Body` in
+`http.MaxBytesReader(w, r.Body, n)` for the chunked case. In the chunked case an oversize
+body makes `PostFormValue` fail inside `CSRF()`, which then answers 403 rather than 413; that
+is acceptable and noted in the §10.5 upload table.
 
-Handlers follow the existing `func(ctx) http.HandlerFunc` factory shape and render
-`shopviews.*` through `web.Base`.
+The admin access-control test (§10.5) covers the two exact patterns as well as the group, so
+a future edit that registers one on bare `store` fails a test rather than shipping an open
+dashboard. `redirectTo` is a three-line helper in `routes/` (`http.Redirect(..., 301)`).
+
+Wire it with one line in `server.Routes()` under the `// ---- domains ----` block:
 
 ```go
-func (s *Service) ProductDetail(ctx server_context.BackEndContext) http.HandlerFunc {
+routes.MountShop(app, s.context)
+```
+
+and one entry in `components.NavLinks`: `{Href: "/shop", Label: "Shop"}`.
+
+### 4.4 A storefront handler (`api_storefront.go`)
+
+```go
+func (a *API) ProductDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		slug := r.PathValue("slug") // Go 1.22+ path wildcards
-		product, err := s.Catalog.BySlug(r.Context(), slug)
-		if err != nil {
-			templ.Handler(web.Base("Not found", web.NotFound())).ServeHTTP(w, r)
+		product, err := a.catalog.BySlug(r.Context(), r.PathValue("slug"))
+		if errors.Is(err, shop.ErrNotFound) {
+			notFound(w, r)
 			return
 		}
-		templ.Handler(
-			web.Base(product.Title, shopviews.ProductDetail(product)),
-		).ServeHTTP(w, r)
+		if err != nil {
+			a.ctx.Logger.Error("product detail", zap.Error(err))
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		shell := api_auth.PageShell(w, r, product.Title)
+		templ.Handler(web.Base(shell, pages.ShopProductDetail(shell.CSRFToken, product))).ServeHTTP(w, r)
 	}
 }
 ```
 
-### 4.3 Add-to-cart (`cart.go`)
-
-The cart key comes from the shared auth layer, not a shop-private cookie. Until the soft-auth
-middleware lands (§7.3 / §7.8) this uses the raw `sid` (`api_auth.SessionID`) — stable whether or not
-an `Identity` is injected, so a signed-in shopper and a guest never split. Once soft-auth is mounted
-on cart routes, switch the key to `api_auth.OwnerRef(w, r)` and add merge-on-login (§7.4).
+### 4.5 Add-to-cart (`api_cart.go`)
 
 ```go
-func (s *Service) AddToCart(ctx server_context.BackEndContext) http.HandlerFunc {
+func (a *API) AddToCart() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := api_auth.SessionID(w, r) // interim cart key (raw sid); -> OwnerRef once soft-auth lands
-		slug := r.FormValue("slug")
-		qty, _ := strconv.Atoi(r.FormValue("qty"))
-		if qty <= 0 {
+		owner := api_auth.OwnerRef(w, r) // user:<id> or guest:<sid>; mints the sid cookie if needed
+		qty := formInt(r, "qty", 1)
+		if qty < 1 {
 			qty = 1
 		}
 
-		p, err := s.Catalog.BySlug(r.Context(), slug)
-		if err != nil {
+		p, err := a.catalog.BySlug(r.Context(), r.FormValue("slug"))
+		if errors.Is(err, shop.ErrNotFound) {
 			http.Error(w, "product not found", http.StatusNotFound)
 			return
 		}
+		if err != nil { /* 500 as above */ }
 
-		cart, err := s.Carts.Load(r.Context(), id)
+		cart, err := a.carts.Load(r.Context(), owner)
 		if err != nil {
 			http.Error(w, "cart unavailable", http.StatusInternalServerError)
 			return
@@ -715,915 +1015,656 @@ func (s *Service) AddToCart(ctx server_context.BackEndContext) http.HandlerFunc 
 			UnitCents: p.PriceCents, ImageURL: img,
 		}, qty)
 		cart.Currency = p.Currency
-		_ = s.Carts.Save(r.Context(), id, cart)
-
+		if err := a.carts.Save(r.Context(), owner, cart); err != nil {
+			http.Error(w, "cart unavailable", http.StatusInternalServerError)
+			return
+		}
 		http.Redirect(w, r, "/shop/cart", http.StatusSeeOther)
 	}
 }
 ```
 
-### 4.4 Wiring into `server.go`
+Price comes from the database, never the form. `OwnerRef` must be called **before** any body
+write since it may set the `sid` cookie; it is the first line for that reason.
 
-Add a `shop` group to `Routes()`. Storefront reads are public; the `admin` subgroup uses
-`api_auth.AdminMiddleware`; the whole group carries `api_auth.CSRF()` (guards mutations, no-ops on
-safe methods). Cart + checkout additionally want **soft-auth** so `OwnerRef` resolves the signed-in
-shopper — pending that shared-layer middleware (§7.3/§7.8), they run public and key the cart on the
-raw `sid`.
+### 4.6 Checkout submit (`api_checkout.go`)
 
-> **Route strings: exactly one space between method and path.** The repo's router splits on the
-> first space (`strings.Cut(path, " ")`) and does not trim spaces from the path, so `"GET  /cart"`
-> (two spaces, e.g. for column alignment) registers the malformed pattern `/shop/ /cart` and the
-> real URL silently 404s. Keep them single-spaced; don't pad for alignment.
+1. `owner := api_auth.OwnerRef(w, r)`; `identity, _ := api_auth.CurrentUser(r.Context())`.
+2. Load cart; empty → `render(w, r, 400, "Cart", pages.ShopCart(token, cart))` with the
+   empty-cart notice (§10.4 `POST /shop/checkout` row 6 pins 400; the 303 belongs only to
+   `GET /shop/checkout`).
+3. Validate shipping fields (all required; email must parse with `net/mail`). Failure →
+   `render(w, r, 400, "Checkout", pages.ShopCheckout(token, cart, errs, values))`.
+4. `order, err := shop.PlaceOrder(ctx, db(...), PlaceOrderInput{…, Number: api_auth.SecureToken(), Provider: a.provider.Name()})`.
+   Map `ErrOutOfStock`/`ErrUnavailable` → re-render checkout as 409 naming the line.
+5. `a.carts.Delete(ctx, owner)` — cart is gone before the redirect.
+6. `url, ref, err := a.provider.Begin(ctx, order)`; store `ref` if non-empty; redirect to
+   `url` if non-empty, else to `/shop/orders/{number}` (303).
 
-```go
-shopSvc := shopserver.New(s.context)
-
-mux.Group("shop", func(shop *router.Router) {
-	// ---- storefront (public) ----
-	shop.HandleFunc("GET /",                 shopSvc.Landing(s.context))
-	shop.HandleFunc("GET /products",         shopSvc.ProductList(s.context))
-	shop.HandleFunc("GET /products/{slug}",  shopSvc.ProductDetail(s.context))
-	shop.HandleFunc("GET /categories/{slug}", shopSvc.CategoryList(s.context))
-
-	// ---- cart ----
-	shop.HandleFunc("GET /cart",         shopSvc.ViewCart(s.context))
-	shop.HandleFunc("POST /cart/add",     shopSvc.AddToCart(s.context))
-	shop.HandleFunc("POST /cart/update",  shopSvc.UpdateCart(s.context))
-	shop.HandleFunc("POST /cart/remove",  shopSvc.RemoveFromCart(s.context))
-
-	// ---- checkout ----
-	shop.HandleFunc("GET /checkout",        shopSvc.Checkout(s.context))
-	shop.HandleFunc("POST /checkout",        shopSvc.SubmitCheckout(s.context))
-	shop.HandleFunc("GET /orders/{number}", shopSvc.OrderConfirmation(s.context))
-
-	// ---- CMS (protected) ----
-	shop.Middleware(api_auth.AdminMiddleware(s.context)).Group("admin", func(admin *router.Router) {
-		admin.HandleFunc("GET /",                    shopSvc.AdminDashboard(s.context))
-		admin.HandleFunc("GET /products",            shopSvc.AdminProducts(s.context))
-		admin.HandleFunc("GET /products/new",        shopSvc.AdminProductForm(s.context))
-		admin.HandleFunc("POST /products",            shopSvc.AdminProductCreate(s.context))
-		admin.HandleFunc("GET /products/{id}/edit",  shopSvc.AdminProductForm(s.context))
-		admin.HandleFunc("POST /products/{id}",       shopSvc.AdminProductUpdate(s.context))
-		admin.HandleFunc("POST /products/{id}/delete", shopSvc.AdminProductDelete(s.context))
-		admin.HandleFunc("POST /products/{id}/images", shopSvc.AdminImageUpload(s.context))
-
-		admin.HandleFunc("GET /categories",          shopSvc.AdminCategories(s.context))
-		admin.HandleFunc("POST /categories",          shopSvc.AdminCategoryCreate(s.context))
-
-		admin.HandleFunc("GET /orders",              shopSvc.AdminOrders(s.context))
-		admin.HandleFunc("GET /orders/{number}",     shopSvc.AdminOrderDetail(s.context))
-		admin.HandleFunc("POST /orders/{number}/status", shopSvc.AdminOrderStatus(s.context))
-	})
-}, api_auth.CSRF()) // group-level CSRF: no-op on safe methods, guards every POST (§7.5)
-```
-
-Add a `"/shop"` nav entry in `internal/web/components/header.templ` (`@NavItem("/shop", false, "Shop")`).
+Order confirmation (`GET /shop/orders/{number}`): look up by `Number`; if a `CurrentUser` is
+present and neither `order.OwnerRef == user:<id>` nor `order.UserID == id`, answer 404 (never
+403 — do not confirm the number exists). A guest sees the order on the number alone; 256 bits
+is the guard.
 
 ---
 
-## 5. Storefront views (`internal/web/pages/shop`, package `shopviews`)
+## 5. Storefront views (`internal/web/pages/shop_*.templ`)
 
-These are `templ` components taking typed data. They inherit the `web.Base` shell (header/footer,
-dark mode, Tailwind CSS at `/static/css/main.css`, Alpine.js from CDN) so styling is consistent
-with the rest of the site. Tailwind Plus "Ecommerce" component markup drops straight into these
-files — the classes below are already in that idiom.
+`templ` components in `package pages`, prefixed `Shop*` the way the booking simulation pages
+are prefixed `Aurenor*`. They render inside `web.Base` and inherit header (with user menu),
+footer, dark mode and Tailwind. Tailwind Plus "Ecommerce" markup drops into these files; the
+classes below are already in that idiom.
 
-Product grid + card:
+Components take typed data and, where they contain a form, the CSRF token:
 
 ```templ
-package shopviews
+package pages
 
 import (
-	sm "github.com/erancihan/clair/internal/shop/models"
+	"github.com/erancihan/clair/internal/database/models"
 	"github.com/erancihan/clair/internal/shop"
 )
 
-templ ProductList(products []sm.ShopProduct) {
-	<div class="mt-16 sm:px-8">
-		<div class="mx-auto max-w-7xl lg:px-8">
-			<div class="relative px-4 sm:px-8 lg:px-12">
-				<div class="mx-auto max-w-2xl lg:max-w-5xl">
-					<h1 class="text-4xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100 sm:text-5xl">
-						Shop
-					</h1>
-					<div class="mt-10 grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-						for _, p := range products {
-							@ProductCard(p)
-						}
-					</div>
-				</div>
-			</div>
-		</div>
-	</div>
-}
-
-templ ProductCard(p sm.ShopProduct) {
+templ ShopProductList(products []models.ShopProduct, total int64, page, perPage int, search, category string) { … }
+templ ShopProductCard(p models.ShopProduct) {
 	<a href={ templ.SafeURL("/shop/products/" + p.Slug) } class="group block">
 		<div class="aspect-square w-full overflow-hidden rounded-2xl bg-zinc-100 dark:bg-zinc-800">
 			if len(p.Images) > 0 {
-				<img src={ p.Images[0].URL } alt={ p.Images[0].Alt }
-					class="h-full w-full object-cover transition group-hover:scale-105"/>
+				<img src={ p.Images[0].URL } alt={ p.Images[0].Alt } class="h-full w-full object-cover transition group-hover:scale-105"/>
 			}
 		</div>
 		<h3 class="mt-4 text-sm font-medium text-zinc-800 dark:text-zinc-100">{ p.Title }</h3>
-		<p class="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-			{ shop.FormatCents(p.PriceCents, p.Currency) }
-		</p>
+		<p class="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{ shop.FormatCents(p.PriceCents, p.Currency) }</p>
 	</a>
 }
-```
 
-Product detail with an add-to-cart form (plain POST form — no JS required, progressive
-enhancement via Alpine optional):
-
-```templ
-templ ProductDetail(p *sm.ShopProduct) {
-	<div class="mx-auto max-w-2xl px-4 py-16 sm:px-6 lg:max-w-5xl lg:px-8">
-		<div class="grid grid-cols-1 gap-x-8 gap-y-10 lg:grid-cols-2">
-			<div class="aspect-square overflow-hidden rounded-3xl bg-zinc-100 dark:bg-zinc-800">
-				if len(p.Images) > 0 {
-					<img src={ p.Images[0].URL } alt={ p.Images[0].Alt } class="h-full w-full object-cover"/>
-				}
-			</div>
-			<div>
-				<h1 class="text-3xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100">{ p.Title }</h1>
-				<p class="mt-4 text-2xl text-zinc-800 dark:text-zinc-100">
-					{ shop.FormatCents(p.PriceCents, p.Currency) }
-				</p>
-				<div class="mt-6 text-base text-zinc-600 dark:text-zinc-400">{ p.Description }</div>
-
-				<form action="/shop/cart/add" method="POST" class="mt-8 flex items-center gap-4">
-					<input type="hidden" name="slug" value={ p.Slug }/>
-					<input type="number" name="qty" value="1" min="1"
-						class="w-20 rounded-md border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800"/>
-					<button type="submit"
-						class="rounded-md bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">
-						Add to cart
-					</button>
-				</form>
-			</div>
-		</div>
-	</div>
+templ ShopProductDetail(csrfToken string, p *models.ShopProduct) {
+	… title, price, description, gallery …
+	<form action="/shop/cart/add" method="POST" class="mt-8 flex items-center gap-4">
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<input type="hidden" name="slug" value={ p.Slug }/>
+		<input type="number" name="qty" value="1" min="1" class="w-20 rounded-md border …"/>
+		<button type="submit" class="rounded-md bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500">Add to cart</button>
+	</form>
 }
+
+templ ShopCart(csrfToken string, cart *shop.Cart) { … per-line update/remove forms, subtotal, checkout link … }
+templ ShopCheckout(csrfToken string, cart *shop.Cart, errs map[string]string, values map[string]string) { … }
+templ ShopOrderConfirmation(o *models.ShopOrder) { … }
+templ ShopLanding(featured []models.ShopProduct, categories []models.ShopCategory) { … }
+templ ShopCategoryPage(cat *models.ShopCategory, products []models.ShopProduct, total int64, page, perPage int) { … }
 ```
 
-Cart, checkout, and order-confirmation templates follow the same structure (a table of
-`cart.Items`, `shop.FormatCents(cart.SubtotalCents(), cart.Currency)` for totals, and a shipping
-form that POSTs to `/shop/checkout`).
+Pagination is a `?page=N` query string; the list components render prev/next links from
+`total`, `page`, `perPage`.
 
-After adding these files, regenerate: `go tool templ generate` (already wired via `//go:generate`
-in `internal/web/embed.go` and `make assets`).
+Regenerate after adding files: `go generate ./...` (the `//go:generate` in `internal/web/embed.go`)
+or `make assets`.
 
 ---
 
 ## 6. Admin CMS (`/shop/admin`)
 
-Server-rendered CRUD, no SPA. Product create/update accept `multipart/form-data` (so image upload
-shares the form). Example create handler + form:
+Server-rendered CRUD, no SPA. Product forms are `multipart/form-data` so image upload shares
+the form. Validation failures re-render the form with `400` and the submitted values.
 
 ```go
-func (s *Service) AdminProductCreate(ctx server_context.BackEndContext) http.HandlerFunc {
+func (a *API) AdminProductCreate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		price, _ := strconv.ParseFloat(r.FormValue("price"), 64)
-		p := &sm.ShopProduct{
-			Title:       r.FormValue("title"),
-			Slug:        shop.Slugify(r.FormValue("title")),
-			Description: r.FormValue("description"),
-			PriceCents:  int64(price * 100), // form shows dollars, DB stores cents
-			Currency:    "USD",
-			Status:      sm.ShopProductStatus(r.FormValue("status")),
-			SKU:         r.FormValue("sku"),
-		}
-		if err := s.Catalog.Create(r.Context(), p); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
 			return
 		}
+		p, errs := productFromForm(r) // title required; price via formCents; status in {draft,published,archived}
+		if len(errs) > 0 {
+			shell := api_auth.PageShell(w, r, "New product")
+			w.WriteHeader(http.StatusBadRequest)
+			templ.Handler(web.Base(shell, pages.ShopAdminProductForm(shell.CSRFToken, p, "/shop/admin/products", errs))).ServeHTTP(w, r)
+			return
+		}
+		if err := a.catalog.Create(r.Context(), p); err != nil { /* 500 */ }
 		http.Redirect(w, r, "/shop/admin/products", http.StatusSeeOther)
 	}
 }
 ```
 
-```templ
-templ ProductForm(p *sm.ShopProduct, action string) {
-	<form action={ templ.SafeURL(action) } method="POST" enctype="multipart/form-data"
-		class="mx-auto max-w-2xl space-y-6 px-4 py-10">
-		<div>
-			<label class="block text-sm font-medium">Title</label>
-			<input name="title" value={ p.Title } required
-				class="mt-1 block w-full rounded-md border px-3 py-2"/>
-		</div>
-		<div>
-			<label class="block text-sm font-medium">Price (USD)</label>
-			<input name="price" type="number" step="0.01" value={ fmt.Sprintf("%.2f", float64(p.PriceCents)/100) }
-				class="mt-1 block w-full rounded-md border px-3 py-2"/>
-		</div>
-		<div>
-			<label class="block text-sm font-medium">Status</label>
-			<select name="status" class="mt-1 block w-full rounded-md border px-3 py-2">
-				<option value="draft"     selected?={ p.Status == sm.ShopProductDraft }>Draft</option>
-				<option value="published" selected?={ p.Status == sm.ShopProductPublished }>Published</option>
-			</select>
-		</div>
-		<textarea name="description" rows="6" class="block w-full rounded-md border px-3 py-2">{ p.Description }</textarea>
-		<button type="submit" class="rounded-md bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white">Save</button>
-	</form>
-}
-```
+`formCents` parses the decimal string with `strconv.ParseFloat` then `math.Round(f*100)`, and
+rejects negatives and NaN. (A float is acceptable here because the input is a two-decimal
+form field, and rounding makes it exact; the database never sees a float.)
 
-Admin order management is a list view + detail with a status `<select>` POSTing to
-`/shop/admin/orders/{number}/status`.
+Order management: list with optional `?status=` filter, detail with a status `<select>` posting
+to `/shop/admin/orders/{number}/status`; the handler calls `shop.Transition` and maps
+`ErrBadTransition` → 400 with the current status re-rendered.
 
 ---
 
-## 7. Auth & identity — consume the shared layer (landed, PR #15)
+## 7. Auth & identity — consume the shared layer
 
-The unified authentication/identity/session/CSRF layer **landed on `master` (PR #15)** in
-`internal/server/authentication` (imported as `api_auth`). The shop **does not build or duplicate any
-of it** — no login, session, user model, roles, or token code lives in the shop package. Roles are
-generic `user` / `admin` (the layer is central, not shop-specific). This section is purely how the
-shop *consumes* it; any missing capability is **raised upstream** (§7.8), not re-implemented here.
+Everything below is imported from `internal/server/authentication` (`api_auth`). The shop
+builds no login, session, role, token or CSRF code.
 
-### 7.1 What we import
-
-```go
-import api_auth "github.com/erancihan/clair/internal/server/authentication"
-```
-
-| Symbol | Use in the shop |
+| Symbol | Shop use |
 |---|---|
-| `api_auth.RoleUser` / `RoleAdmin` (`"user"`/`"admin"`) | role checks (via middleware) |
-| `models.User` (now has `Role`; `Password` is `json:"-"`) | the one shared user model — shop adds none |
-| `api_auth.Identity{UserID, Role}` + `CurrentUser(ctx)` | know the signed-in shopper in a handler |
-| `api_auth.AuthMiddleware` / `AdminMiddleware` | gate authed / admin routes |
-| `api_auth.SessionID(w, r)` | the long-lived HttpOnly `sid` cookie |
-| `api_auth.OwnerRef(w, r)` → `"user:<id>"` \| `"guest:<sid>"` | cart & order ownership (§7.3) |
-| `api_auth.CSRF()` + `CSRFToken(r)` + `CSRFHeaderName`/`CSRFFieldName` | protect shop mutations (§7.5) |
-| `api_auth.SecureToken()` | the shop order `Number` (guest IDOR guard, §12) |
+| `OptionalAuthMiddleware` | already on every app route via `server.Routes()`; nothing to mount |
+| `CurrentUser(ctx)` → `Identity{UserID, Role}` | who is checking out; order scoping on the confirmation page |
+| `OwnerRef(w, r)` → `"user:<id>"` / `"guest:<sid>"` | cart key and `ShopOrder.OwnerRef` |
+| `RegisterGuestMigrator("shop", fn)` | merge guest cart + re-point pending orders on login (§3.9) |
+| `AdminMiddleware(ctx)` | every `/shop/admin*` route: 302 `/login?next=…` for browsers, 401 for JSON callers, 403 for role `user` |
+| `CSRF()` | every shop `POST`; token via hidden `csrf_token` field or `X-CSRF-Token` header |
+| `PageShell(w, r, title)` | every rendered page: mints/persists the CSRF token, fills the user menu |
+| `SecureToken()` | `ShopOrder.Number` |
 
-Behaviour inherited from the layer (do not re-implement): auth failure is **content-negotiated**
-(JSON → 401, browser → 302 `/login?next=…`); `GET /api/v1/users` is admin-only (not a public
-directory); `SESSION_KEY` is mandatory when `APP_ENV=production`.
+Behaviour inherited and not re-implemented: auth failure is content-negotiated; `/login?next=`
+accepts same-origin absolute paths only; `SESSION_KEY` is mandatory in production; the `sid`
+cookie is `HttpOnly`, `Path=/`, `SameSite=Lax`, one year.
 
-### 7.2 Per-route middleware
-
-| Route group | Middleware |
-|---|---|
-| Storefront reads (`GET /shop`, products, categories) | none (public) |
-| Cart + checkout (`/shop/cart/*`, `/shop/checkout`) | **soft-auth** (§7.3) + `CSRF()` on writes |
-| CMS (`/shop/admin/*`) | `AdminMiddleware` + `CSRF()` on writes |
-
-The shop has **no webhook** (payments are mock, §0); `VerifyProviderSignature` is unused here.
-
-### 7.3 Cart & order ownership (explicit — required call-out)
-
-Carts and orders are keyed on **`OwnerRef`** — `"user:<id>"` for a signed-in shopper, `"guest:<sid>"`
-otherwise. Anonymous carts work out of the box via the `sid` cookie, and the format is identical to
-what booking persists.
-
-**The nuance, made explicit:** `OwnerRef` reports `user:<id>` **only when an `Identity` has been
-injected** — i.e. the request ran through an auth middleware. But the public storefront/cart pages
-**cannot** sit behind the *blocking* `AuthMiddleware`: it 401s/redirects anonymous shoppers, and
-**guest checkout is a locked decision** (§12). Without identity injection, a signed-in shopper looks
-like a guest → **split cart**.
-
-**Decision:** cart + checkout routes run behind a **soft-auth** step that injects `Identity` when a
-valid session exists but lets anonymous shoppers pass. Then `OwnerRef` is consistent on every cart
-route (user *or* guest) and there is no split.
-
-**Gap (raised upstream, §7.8):** the shared layer ships only the *blocking* `AuthMiddleware`. The
-soft-auth injector belongs in the shared layer (booking needs the identical thing for guest holds),
-not the shop. **Interim, until it lands:** key the cart on the raw `sid` (`api_auth.SessionID(w, r)`)
-— stable whether or not identity is injected, so no split — and resolve `OwnerRef` only at the moment
-the order is created at checkout.
-
-### 7.4 Guest cart merge on login (decision: merge)
-
-When a shopper with a `guest:<sid>` cart signs in, the shop **merges** the guest cart into their
-`user:<id>` cart (union of line items; quantities summed, capped at stock). The `sid` cookie survives
-logout, so the guest cart persists — merging avoids a "lost cart" surprise. (Replace / prompt were
-considered and rejected as more surprising.) Trigger it right after a successful sign-in, or lazily on
-the next cart access when `CurrentUser` is present yet a `guest:<sid>` cart still exists.
-
-### 7.5 CSRF on shop mutations
-
-`CSRF()` is **not** mounted globally (login/register are intentionally exempt). Mount it on the shop
-group so every shop `POST/PUT/PATCH/DELETE` (add-to-cart, update-quantity, remove, checkout, all
-`/shop/admin` writes) is guarded; safe methods pass through. In templ forms render the hidden field;
-AJAX sends the header.
-
-```templ
-<input type="hidden" name={ api_auth.CSRFFieldName } value={ api_auth.CSRFToken(r) }/>
-```
-
-Thread `api_auth.CSRFToken(r)` into the view data (forms); `fetch()` callers send
-`api_auth.CSRFHeaderName`.
-
-### 7.6 Admin CMS
-
-`/shop/admin/*` runs behind `api_auth.AdminMiddleware`: admin passes; role `user` → 403;
-unauthenticated browser → 302 `/login?next=…`; JSON caller → 401 (content-negotiated). No shop-side
-role logic — the middleware and role constants come from the shared layer.
-
-### 7.7 Sign-in-to-continue
-
-For a gated action, link to `/login?next=/shop/checkout` (or the target path). The shared login page
-round-trips `next` and redirects back after sign-in; the value is validated **same-origin absolute
-paths only** (`//host`, absolute URLs, and backslash tricks are rejected → `/dashboard`), so it can't
-be used for external returns.
-
-### 7.8 Gaps raised upstream (do not duplicate in the shop)
-
-- **Soft / optional auth middleware** — inject `Identity` when a valid session exists, pass anonymous
-  through (no 401/redirect). Needed by the shop's public cart routes (§7.3) and by booking's guest
-  holds. Request it in `internal/server/authentication` rather than reading the session store from the
-  shop package.
+Sign-in-to-continue links point at `/login?next=/shop/checkout`.
 
 ---
 
 ## 8. Image uploads
 
-Simplest path that matches the current static-serving setup: save uploads to the `public/` dir
-(served by the existing `GET /public/` route) and store the relative URL in `ShopProductImage.URL`.
+Files go under `web.Public()` (env `PUBLIC_PATH`, default `internal/web/public`; the compose
+file mounts a volume there) and are served by the existing `GET /public/` route.
 
-```go
-func (s *Service) AdminImageUpload(ctx server_context.BackEndContext) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.Atoi(r.PathValue("id"))
-		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB
-			http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		file, hdr, err := r.FormFile("image")
-		if err != nil { http.Error(w, "no file", http.StatusBadRequest); return }
-		defer file.Close()
+Rules, each pinned by a §10.6 row:
 
-		// content-type allow-list (test §10.6 asserts non-image rejection)
-		if ct := hdr.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
-			http.Error(w, "not an image", http.StatusBadRequest)
-			return
-		}
+- Size cap `maxUploadBytes = 10 << 20`, enforced by the `maxBody` middleware mounted
+  **outside** `CSRF()` in the route table (§4.3): `Content-Length` over the cap → 413 before
+  anything is read; `MaxBytesReader` backs that up for chunked bodies. The handler itself does
+  not cap — by the time it runs, `CSRF()` has already parsed the multipart body to find the
+  `csrf_token` field, so a cap there would be dead code. The handler just calls
+  `r.FormFile("image")`.
+- Sniff the first 512 bytes with `http.DetectContentType`; allow `image/png`, `image/jpeg`,
+  `image/webp`, `image/gif` only. The client's `Content-Type` header is not consulted.
+- The stored name is **never** the client's: `products/<productID>-<SecureToken()[:16]>.<ext>`
+  with `ext` derived from the sniffed type. Traversal is impossible by construction.
+- `os.MkdirAll(filepath.Join(web.Public(), "products"), 0o755)`; write; then
+  `catalog.AddImage(ctx, id, "/public/"+name, alt)`.
+- Add `internal/web/public/products/` to `.gitignore`.
 
-		dir := filepath.Join(web.Public(), "products")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		name := fmt.Sprintf("products/%d-%s", id, filepath.Base(hdr.Filename)) // Base() strips ../
-		dst, err := os.Create(filepath.Join(web.Public(), name))
-		if err != nil { http.Error(w, err.Error(), http.StatusInternalServerError); return }
-		defer dst.Close()
-		if _, err := io.Copy(dst, file); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if err := s.Catalog.AddImage(r.Context(), uint(id), "/public/"+name, r.FormValue("alt")); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, fmt.Sprintf("/shop/admin/products/%d/edit", id), http.StatusSeeOther)
-	}
-}
-```
-
-(Note: the `Content-Type` header is client-supplied, so it's a cheap first gate, not a guarantee —
-for real assurance sniff the first 512 bytes with `http.DetectContentType`.)
-
-Upgrade path: the project already depends on `aws-sdk-go`, so an S3-backed `ImageStore` interface
-is a clean later swap. Add `internal/web/public/products/` to `.gitignore` for local uploads.
+Upgrade path: an `ImageStore` interface (`Put(ctx, name, r) (url, error)`) with the local
+implementation above; an S3 implementation is a later swap (`aws-sdk-go` is already a dependency).
 
 ---
 
-## 9. Asset pipeline / Tailwind v4 notes
+## 9. Assets / Tailwind
 
-- CSS entry is `internal/web/css/main.css` = `@import "tailwindcss";` (v4). v4 auto-detects source
-  files, which is why current pages get their classes even though `tailwind.config.js`'s `content`
-  array only lists `login.templ`. To make it explicit and robust for the new `shop/` views, add a
-  source directive to `main.css`:
-
-  ```css
-  @import "tailwindcss";
-  @source "../";           /* scans all *.templ under internal/web */
-  ```
-
-- Build stays the same: `make assets` runs `npm run css` (gulp → postcss → tailwind → cssnano) then
-  `go generate ./...` (templ). `make dev` uses `air`, which already watches `.templ`.
-- No new JS build step. Add-to-cart works as plain forms; use the already-loaded Alpine.js only for
-  nice-to-haves (quantity steppers, a cart-count badge).
+- `internal/web/css/main.css` is `@import "tailwindcss";` (v4). v4 auto-detects sources, which
+  is why pages work today even though `tailwind.config.js` only lists `login.templ`. Make it
+  explicit for the new files: add `@source "../";` under the import.
+- No new JS build step. `make assets` (`npm run css` + `go generate ./...`) and `make dev`
+  (`air`, watches `.templ`) are unchanged.
 
 ---
 
 ## 10. Testing
 
-Testing is **primarily endpoint (HTTP integration) testing**: each test drives the real
-`Routes()` handler through `net/http/httptest` against a throwaway **PostgreSQL** and a `nil` Valkey
-client (so the cart uses its DB fallback store — Valkey is optional/fail-open, §3.3). A handful of
-pure-domain unit tests back the money/cart math. Everything lives under `test/` and runs with
-`go test ./test/... -v` (Docker required for the Postgres container).
+Endpoint tests drive the **real** `server.Routes()` through `httptest` against Postgres, the
+way `test/mount_seam_test.go` and the aurenor tests do. Domain logic gets unit tests in
+`internal/shop`. Postgres comes from `DATABASE_URL` (`make db-up` starts the compose service);
+`make test` runs `go test ./test/... -v`.
 
-> **Postgres-only, matching production.** SQLite was removed (§2.3), so tests run on the same engine
-> as production. One `testcontainers-go` Postgres starts once per package (`TestMain`); each test gets
-> an isolated **schema** (via `search_path`) so table state never leaks between tests, even in
-> parallel. No dialect differences to reconcile.
+> **Use the harness that exists.** `master` has no testcontainers dependency and does not need
+> one. The helpers below are already in `test/` (auth work) and `internal/testsupport`:
+>
+> | Helper | Use |
+> |---|---|
+> | `newRoutesServer(t)` | `httptest.Server` over `server.NewBackEnd(ctx, zap.NewNop(), nil, db).Routes()` — nil Valkey, so the cart uses `shop_carts` |
+> | `newAuthTestDB(t)` | drops app tables and re-runs `database.Migrate` (includes `shop.Models()` once wired) |
+> | `createUser(t, db, email, pw, role)` | seed an admin (`"admin"`) or shopper (`"user"`) |
+> | `jarClient(t)` | cookie-jar client (session + `sid`); set `CheckRedirect` to `http.ErrUseLastResponse` to assert 303s |
+> | `readBody(t, resp)`, `csrfMetaToken(t, body)` | read a page; pull the token from `<meta name="csrf-token">` |
+> | `testsupport.PostgresDB(t, models...)` | per-test isolated schema for domain unit tests |
+>
+> The tests need one new helper: `loginRoutes(t, client, srvURL, email, pw)` posting JSON to
+> `/api/v1/auth/login` on the routes server (the existing `loginJSON` targets the auth-only
+> server; the endpoint requires `Content-Type: application/json`). And a
+> `shopForm(t, client, url, token, values)` that posts `application/x-www-form-urlencoded`
+> with `csrf_token` set.
+>
+> **`PUBLIC_PATH` in tests.** `web.Public()` defaults to the *relative* `internal/web/public`,
+> and `go test ./test/...` runs with `test/` as the working directory, so uploads would land
+> in `test/internal/web/public/`. Upload tests `t.Setenv("PUBLIC_PATH", t.TempDir())`. For the
+> same reason the plan asserts nothing about `/static/` or `/public/` (the CSS is
+> git-ignored build output; the favicon path is CWD-dependent).
 
-### 10.1 Test harness
+CSRF in tests: `GET` any shop page first, take the token from the meta tag, send it as the
+`csrf_token` field. A POST without it must get `403` — that is the CSRF row in every table below.
 
-```go
-package test
-
-import (
-	"context"
-	"io"
-	"net/http"
-	"net/http/cookiejar"
-	"net/http/httptest"
-	"os"
-	"strings"
-	"testing"
-
-	"github.com/erancihan/clair/internal/database/models" // shared: User
-	sm "github.com/erancihan/clair/internal/shop/models"  // shop: Shop*
-	"github.com/erancihan/clair/internal/server"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
-	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
-	gormpg "gorm.io/driver/postgres"
-	"gorm.io/gorm"
-)
-
-// One Postgres container for the whole package; testDSN points at it.
-var testDSN string
-
-func TestMain(m *testing.M) {
-	ctx := context.Background()
-	pg, err := postgres.Run(ctx, "postgres:16-alpine",
-		postgres.WithDatabase("clair_test"),
-		postgres.WithUsername("test"), postgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(wait.ForListeningPort("5432/tcp")),
-	)
-	if err != nil {
-		panic(err)
-	}
-	testDSN, _ = pg.ConnectionString(ctx, "sslmode=disable")
-	code := m.Run()
-	_ = pg.Terminate(ctx)
-	os.Exit(code)
-}
-
-// newTestServer spins up the real Routes() against an isolated schema in the shared container.
-// nil Valkey => the cart uses the DB fallback store (shop_carts), so no Valkey is needed in CI.
-func newTestServer(t *testing.T) (*httptest.Server, *gorm.DB) {
-	t.Helper()
-	schema := "t_" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_")
-
-	// Create the schema on a bootstrap conn, then open pinned to it via search_path
-	// (search_path in the DSN applies to every pooled connection — a plain SET would not).
-	boot, err := gorm.Open(gormpg.Open(testDSN), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	boot.Exec("CREATE SCHEMA " + schema)
-	t.Cleanup(func() { boot.Exec("DROP SCHEMA " + schema + " CASCADE") })
-
-	db, err := gorm.Open(gormpg.Open(testDSN+" search_path="+schema), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	db.AutoMigrate(
-		&models.User{}, &sm.ShopCategory{}, &sm.ShopProduct{},
-		&sm.ShopProductImage{}, &sm.ShopOrder{}, &sm.ShopOrderItem{}, &sm.ShopCart{},
-	)
-	handler := server.NewBackEnd(context.Background(), zap.NewNop(), nil, db).Routes()
-	ts := httptest.NewServer(handler)
-	t.Cleanup(ts.Close)
-	return ts, db
-}
-
-// newClient keeps a cookie jar (session + sid persist across requests) and does
-// NOT auto-follow redirects, so tests can assert 303 + Location.
-func newClient(t *testing.T) *http.Client {
-	jar, _ := cookiejar.New(nil)
-	return &http.Client{
-		Jar:           jar,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
-
-func seedAdmin(t *testing.T, db *gorm.DB, email, pw string) {
-	hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
-	db.Create(&models.User{Username: "admin", Email: email, Password: string(hash), Role: "admin"})
-}
-
-// loginAs authenticates c against the JSON login endpoint; the session cookie lands in c's jar.
-func loginAs(t *testing.T, ts *httptest.Server, c *http.Client, email, pw string) {
-	body := strings.NewReader(`{"email":"` + email + `","password":"` + pw + `"}`)
-	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/auth/login", body)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("login failed: err=%v status=%d", err, resp.StatusCode)
-	}
-}
-```
-
-Table-driven endpoint test (the pattern every table below compiles down to):
-
-```go
-func TestProductDetail(t *testing.T) {
-	ts, db := newTestServer(t)
-	db.Create(&sm.ShopProduct{Slug: "blue-shirt", Title: "Blue Shirt", Status: sm.ShopProductPublished, PriceCents: 1299, Currency: "USD"})
-	db.Create(&sm.ShopProduct{Slug: "secret", Title: "Secret", Status: sm.ShopProductDraft, PriceCents: 500, Currency: "USD"})
-
-	cases := []struct {
-		name, path string
-		wantStatus int
-		wantBody   string // substring; "" to skip
-	}{
-		{"published renders price", "/shop/products/blue-shirt", 200, "$12.99"},
-		{"unknown slug 404", "/shop/products/ghost", 404, ""},
-		{"draft hidden 404", "/shop/products/secret", 404, ""},
-		{"wrong method 405", "/shop/products/blue-shirt", 405, ""}, // via POST in the real test
-	}
-	c := newClient(t)
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resp, _ := c.Get(ts.URL + tc.path)
-			if resp.StatusCode != tc.wantStatus {
-				t.Fatalf("got %d want %d", resp.StatusCode, tc.wantStatus)
-			}
-			if tc.wantBody != "" {
-				b, _ := io.ReadAll(resp.Body)
-				if !strings.Contains(string(b), tc.wantBody) {
-					t.Fatalf("body missing %q", tc.wantBody)
-				}
-			}
-		})
-	}
-}
-```
-
-**Conventions used in the tables below**
-- *Type* column tags coverage: Happy, Validation, AuthN, AuthZ, Not found, Method, Boundary, Edge, State, Security.
-- Successful POSTs use Post/Redirect/Get → `303 See Other` with a `Location` header.
-- 🚩 marks a design decision the test *pins down* — confirm the intended behavior before writing the assertion.
-
-### 10.2 Unit tests (pure domain, no HTTP)
+### 10.1 Unit tests (`internal/shop`, no HTTP)
 
 | # | Target | Scenario | Expected |
 |---|---|---|---|
-| 1 | `Cart.Upsert` | add new / merge existing qty / qty≤0 removes line | items & quantities correct |
-| 2 | `Cart.SubtotalCents` / `Count` | mixed items & quantities | Σ(unit×qty); total item count |
-| 3 | `FormatCents` | 1299/USD, 0, negative, unmapped currency (`JPY`) | `$12.99`, `$0.00`, `-$…`, `JPY …` (mapped syms like `€` resolve; unmapped fall back to `CODE `) |
-| 4 | `PlaceOrder` | snapshot lines, subtotal math, out-of-stock rollback, empty-cart error | order+items or `ErrOutOfStock`/`ErrEmptyCart`; stock unchanged on failure |
-| 5 | `Slugify` | spaces/case/punctuation, collision suffixing | stable, unique slugs |
+| 1 | `Cart.Upsert` / `Set` / `Remove` | add new; merge qty; qty ≤ 0 removes; Set 0 removes | items & quantities correct |
+| 2 | `Cart.SubtotalCents` / `Count` | mixed lines | Σ(unit×qty); Σ qty |
+| 3 | `FormatCents` | 1299 USD; 0; −1299; `JPY` | `$12.99`, `$0.00`, `-$12.99`, `JPY 12.99` |
+| 4 | `Slugify` / `UniqueSlug` | spaces/case/punctuation; existing `blue-shirt` | `blue-shirt`; `blue-shirt-2`, `-3` (Postgres) |
+| 5 | `PlaceOrder` | snapshot lines; subtotal; re-price from DB (cart price ignored); unpublished line → `ErrUnavailable`; qty > stock → `ErrOutOfStock` with **no** order and stock unchanged; empty cart → `ErrEmptyCart` (Postgres) |
+| 6 | `Transition` | pending→paid stamps `PaidAt`; paid→fulfilled; pending→cancelled restocks; fulfilled→anything → `ErrBadTransition`; same-state no-op (Postgres) |
+| 7 | `MigrateGuest` | guest cart merges into user cart, quantities summed, guest cart deleted; pending guest orders re-pointed with `user_id`; second run is a no-op (Postgres, DB cart store) |
+| 8 | DB cart store | Load missing → empty non-nil; Save/Load round-trip; Delete |
 
-### 10.3 Storefront (public reads)
+### 10.2 Storefront (public reads)
 
-#### `GET /shop/`
+Conventions: *Type* tags coverage (Happy, Validation, AuthN, AuthZ, Not found, Method, Boundary,
+Edge, State, Security). Successful POSTs are `303` with `Location`. 🚩 marks an assertion that
+pins a decision from §12.
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+#### `GET /shop`
+
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Landing renders | some published products + categories | `GET /shop/` | 200 | base shell, featured products & category links |
-| 2 | Edge | Empty catalog | no products | `GET /shop/` | 200 | empty-state, no product cards |
-| 3 | Edge | Only drafts exist | all products draft | `GET /shop/` | 200 | no products shown (published-only) |
-| 4 | Method | Wrong verb | — | `POST /shop/` | 405 | Method Not Allowed |
+| 1 | Happy | Landing renders | published products, categories | `GET /shop` | 200 | shell, featured cards, category links |
+| 2 | Edge | Empty catalog | none | `GET /shop` | 200 | empty state |
+| 3 | Edge | Only drafts | all draft | `GET /shop` | 200 | no cards |
+| 4 | Edge | Trailing slash | — | `GET /shop/` | 301 → `/shop` 🚩 | canonical bare path |
+| 5 | Method | Wrong verb on bare `/shop` | — | `POST /shop` | 200 | site catch-all; not asserted (§4.3 note 1) |
 
 #### `GET /shop/products`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Default first page | >12 published | `GET /shop/products` | 200 | 12 items, newest first |
-| 2 | Happy | Pagination | >12 published | `?page=2` | 200 | second page items |
-| 3 | Happy | Search match | product "Blue Shirt" | `?search=Blue` | 200 | only matching products |
-| 4 | Happy | Category filter | category "hats" populated | `?category=hats` | 200 | only that category's published |
-| 5 | Edge | Search no match | — | `?search=zzz` | 200 | empty result grid |
-| 6 | Edge | Drafts excluded | mixed draft/published | `GET /shop/products` | 200 | drafts absent |
-| 7 | Boundary | Page beyond range | 5 products | `?page=99` | 200 | empty grid, no error |
-| 8 | Boundary | page ≤0 / non-numeric | — | `?page=0` / `?page=abc` | 200 | defaults to page 1 |
-| 9 | Edge | Unknown category filter | — | `?category=nope` | 200 | empty list (§12) — consistent with search, not 404 |
-| 10 | Security | Search XSS | — | `?search=<script>` | 200 | value escaped (templ auto-escape) |
-| 11 | Method | Wrong verb | — | `POST /shop/products` | 405 | Method Not Allowed |
+| 1 | Happy | First page | >12 published | `GET /shop/products` | 200 | 12 cards, newest first |
+| 2 | Happy | Page 2 | >12 published | `?page=2` | 200 | remaining |
+| 3 | Happy | Search | "Blue Shirt" | `?search=blue` | 200 | case-insensitive match (`ILIKE`) |
+| 4 | Happy | Category filter | "hats" populated | `?category=hats` | 200 | only that category |
+| 5 | Edge | Search no match | — | `?search=zzz` | 200 | empty grid |
+| 6 | Edge | Drafts excluded | mixed | — | 200 | drafts absent |
+| 7 | Boundary | Page beyond range | 5 products | `?page=99` | 200 | empty grid |
+| 8 | Boundary | page ≤ 0 / non-numeric | — | `?page=0`, `?page=abc` | 200 | page 1 |
+| 9 | Edge | Unknown category filter | — | `?category=nope` | 200 🚩 | empty list, consistent with search |
+| 10 | Security | Search XSS | — | `?search=<script>` | 200 | escaped (templ) |
+| 11 | Method | Wrong verb | — | `POST` | 404 (fallback) | |
 
 #### `GET /shop/products/{slug}`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Published detail | published slug `x` | `GET …/x` | 200 | title, formatted price, add-to-cart form, images |
-| 2 | Edge | No images | product without images | `GET …/x` | 200 | renders without `<img>`, no crash |
-| 3 | Edge | Price formatting | price 1299 USD | `GET …/x` | 200 | shows `$12.99` |
-| 4 | Not found | Unknown slug | — | `GET …/ghost` | 404 | NotFound shell |
-| 5 | Not found | Draft product | slug `d` is draft | `GET …/d` | 404 | hidden |
-| 6 | Not found | Archived product | slug `a` archived | `GET …/a` | 404 | hidden |
-| 7 | Security | Malicious slug | — | `GET …/<script>` / `../` | 404 / escaped | no traversal, escaped |
-| 8 | Method | Wrong verb | — | `POST …/x` | 405 | Method Not Allowed |
+| 1 | Happy | Published | slug `x` | `GET …/x` | 200 | title, `$12.99`, add-to-cart form with `csrf_token` |
+| 2 | Edge | No images | — | `GET …/x` | 200 | no `<img>`, no crash |
+| 3 | Not found | Unknown | — | `GET …/ghost` | **404** 🚩 | not-found page |
+| 4 | Not found | Draft | — | `GET …/d` | 404 | |
+| 5 | Not found | Archived | — | `GET …/a` | 404 | |
+| 6 | Not found | Soft-deleted | — | `GET …/gone` | 404 | |
+| 7 | Security | Malicious slug | — | `GET …/<script>` | 404 | escaped, no traversal |
+| 8 | Method | Wrong verb | — | `POST …/x` | 404 (fallback) | |
 
 #### `GET /shop/categories/{slug}`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Category with products | "hats" has published products | `GET …/hats` | 200 | lists that category's published products |
-| 2 | Edge | Empty category | category exists, no products | `GET …/hats` | 200 | empty-state |
-| 3 | Happy | Pagination | >12 in category | `?page=2` | 200 | page 2 |
-| 4 | Not found | Unknown category | — | `GET …/none` | 404 | NotFound shell |
-| 5 | Method | Wrong verb | — | `POST …/hats` | 405 | Method Not Allowed |
+| 1 | Happy | With products | "hats" | `GET …/hats` | 200 | that category's published |
+| 2 | Edge | Empty category | exists, none | `GET …/hats` | 200 | empty state |
+| 3 | Happy | Page 2 | >12 | `?page=2` | 200 | |
+| 4 | Not found | Unknown | — | `GET …/none` | **404** | |
+| 5 | Method | Wrong verb | — | `POST …/hats` | 404 (fallback) | |
 
-### 10.4 Cart
+### 10.3 Cart
 
 #### `GET /shop/cart`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | View populated cart | `sid` cookie with items | `GET /shop/cart` | 200 | items, qty, line + subtotal totals |
-| 2 | Happy | Empty cart | cookie present, empty | `GET /shop/cart` | 200 | empty-cart message, checkout disabled |
-| 3 | Edge | No cookie → new cart | no `sid` | `GET /shop/cart` | 200 | `Set-Cookie: sid`; empty state |
-| 4 | Edge | Subtotal correctness | items qty 2 & 3 | `GET /shop/cart` | 200 | subtotal = Σ(unit×qty) |
-| 5 | Method | Wrong verb | — | `PUT /shop/cart` | 405 | Method Not Allowed |
+| 1 | Happy | Populated | items in cart | `GET` | 200 | lines, qty, line totals, subtotal, `csrf_token` in each form |
+| 2 | Happy | Empty | — | `GET` | 200 | empty message, checkout link absent |
+| 3 | Edge | First visit | no `sid` | `GET` | 200 | `Set-Cookie: sid` (HttpOnly, Path=/, Lax) |
+| 4 | State | Signed-in shopper | logged in, items added while logged in | `GET` | 200 | same cart (keyed `user:<id>`) |
+| 5 | Method | Wrong verb | — | `PUT` | 404 (fallback) | |
 
 #### `POST /shop/cart/add`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Add new item | published `x`, no/empty cart | `slug=x&qty=1` | 303 | `Set-Cookie sid`; redirect `/shop/cart`; line added |
-| 2 | Happy | Merge quantity | `x` already in cart (qty 1) | `slug=x&qty=2` | 303 | qty → 3, single line |
-| 3 | Validation | Missing slug | — | `qty=1` | 404 | product not found |
-| 4 | Not found | Unknown slug | — | `slug=ghost&qty=1` | 404 | product not found |
-| 5 | Edge | Draft not addable | `d` is draft | `slug=d&qty=1` | 404 | published-only lookup fails |
-| 6 | Boundary | qty missing / 0 / negative | — | `slug=x` / `qty=0` / `qty=-3` | 303 | qty clamped to 1 |
-| 7 | Boundary | Non-numeric qty | — | `slug=x&qty=abc` | 303 | Atoi fails → qty 1 |
-| 8 | Boundary | Huge qty | — | `slug=x&qty=999999` | 303 | accepted; stock checked at checkout 🚩 |
-| 9 | Security | Price tampering | — | `slug=x&price=1` | 303 | price sourced from DB, form price ignored |
-| 10 | Security | CSRF | cross-site POST, no token | `slug=x&qty=1` | 403 | rejected by CSRF middleware (§7.5) |
-| 11 | Method | Wrong verb | — | `GET /shop/cart/add` | 405 | Method Not Allowed |
+| 1 | Happy | Add new | published `x` | `slug=x&qty=1` | 303 → `/shop/cart` | line added |
+| 2 | Happy | Merge qty | `x` qty 1 | `slug=x&qty=2` | 303 | qty 3, one line |
+| 3 | Validation | Missing slug | — | `qty=1` | 404 | |
+| 4 | Not found | Unknown slug | — | `slug=ghost` | 404 | |
+| 5 | Edge | Draft | — | `slug=d` | 404 | |
+| 6 | Boundary | qty missing / 0 / negative | — | — | 303 | qty 1 |
+| 7 | Boundary | Non-numeric qty | — | `qty=abc` | 303 | qty 1 |
+| 8 | Boundary | Huge qty | — | `qty=999999` | 303 | accepted; stock enforced at checkout 🚩 |
+| 9 | Security | Price tampering | — | `price=1` | 303 | price from DB |
+| 10 | Security | CSRF missing | — | no token | **403** | |
+| 11 | Method | Wrong verb | — | `GET` | 404 (fallback) | |
 
 #### `POST /shop/cart/update`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Change quantity | item in cart | `product_id=1&qty=5` | 303 | line qty → 5; redirect `/shop/cart` |
-| 2 | Edge | qty ≤0 removes line | item in cart | `product_id=1&qty=0` | 303 | line removed |
-| 3 | Edge | Product not in cart | — | `product_id=99&qty=2` | 303 | no-op |
-| 4 | Edge | No cart cookie | no cookie | `product_id=1&qty=2` | 303 | empty cart, no-op |
-| 5 | Validation | Missing product_id | — | `qty=2` | 400 / 303 🚩 | handled, no crash |
-| 6 | Boundary | Non-numeric id/qty | — | `product_id=x&qty=y` | 400 / 303 | handled, no crash |
-| 7 | Method | Wrong verb | — | `GET /shop/cart/update` | 405 | Method Not Allowed |
+| 1 | Happy | Set qty | line exists | `product_id=1&qty=5` | 303 | qty 5 |
+| 2 | Edge | qty 0 removes | — | `qty=0` | 303 | line gone |
+| 3 | Edge | Not in cart | — | `product_id=99` | 303 | no-op |
+| 4 | Validation | Missing / non-numeric id | — | — | 400 🚩 | no crash |
+| 5 | Security | CSRF missing | — | — | 403 | |
+| 6 | Method | Wrong verb | — | `GET` | 404 (fallback) | |
 
 #### `POST /shop/cart/remove`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Remove existing | item in cart | `product_id=1` | 303 | line removed; redirect `/shop/cart` |
-| 2 | Edge | Remove absent | not in cart | `product_id=99` | 303 | no-op |
-| 3 | State | Remove twice | — | `product_id=1` ×2 | 303 | second is no-op |
-| 4 | Validation | Missing product_id | — | (empty body) | 400 / 303 🚩 | handled |
-| 5 | Method | Wrong verb | — | `GET /shop/cart/remove` | 405 | Method Not Allowed |
+| 1 | Happy | Remove | line exists | `product_id=1` | 303 | gone |
+| 2 | Edge | Absent / twice | — | — | 303 | no-op |
+| 3 | Validation | Missing id | — | — | 400 🚩 | |
+| 4 | Security | CSRF missing | — | — | 403 | |
+| 5 | Method | Wrong verb | — | `GET` | 404 (fallback) | |
 
-### 10.5 Checkout & Orders (public)
+#### Guest → login merge (cross-cutting)
+
+| # | Type | Scenario | State | Steps | Result |
+|---|---|---|---|---|---|
+| 1 | State | Merge on login | guest cart {x:1}; user cart {x:1, y:2} | add as guest, login via `/api/v1/auth/login`, `GET /shop/cart` | {x:2, y:2}; guest key gone |
+| 2 | State | Login with no guest cart | — | login, view | user cart unchanged |
+| 3 | State | Pending guest order re-pointed | guest placed order | login | `owner_ref=user:<id>`, `user_id` set |
+
+### 10.4 Checkout & orders
 
 #### `GET /shop/checkout`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Show form | non-empty cart cookie | `GET /shop/checkout` | 200 | shipping form + order summary |
-| 2 | Edge | Empty cart | empty / absent cart | `GET /shop/checkout` | 303 → `/shop/cart` 🚩 | redirect or empty-state |
-| 3 | Method | Wrong verb | — | `PUT /shop/checkout` | 405 | Method Not Allowed |
+| 1 | Happy | Form | non-empty cart | `GET` | 200 | shipping form + summary + `csrf_token` |
+| 2 | Edge | Empty cart | — | `GET` | 303 → `/shop/cart` 🚩 | |
+| 3 | Method | Wrong verb | — | `PUT` | 404 (fallback) | |
 
 #### `POST /shop/checkout`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Place order (guest) | non-empty cart, valid fields | `email,name,address,city,postal,country` | 303 | Order+OrderItems (`pending_payment`), stock decremented, cart cleared; redirect `/shop/orders/{number}` |
-| 2 | Edge | Snapshot integrity | product edited after order | edit product later | — | OrderItem keeps original title/price |
-| 3 | Edge | Empty cart | empty cart | valid fields | 400 🚩 | `ErrEmptyCart`, no order |
-| 4 | Edge | Out of stock | item qty > stock | valid fields | 409 / 400 🚩 | `ErrOutOfStock`, no order, stock unchanged (rollback) |
-| 5 | Boundary | Stock exactly equal | qty == stock | valid fields | 303 | succeeds, stock → 0 |
-| 6 | Validation | Missing required field | cart ok, no email | omit `email` | 400 | re-render with error, no order |
-| 7 | Validation | Invalid email | — | `email=notanemail` | 400 | error, no order |
-| 8 | State | Double submit | same cart posted twice | POST ×2 | 303, then 400 | cart cleared on success (§3.4); 2nd sees empty cart → `ErrEmptyCart` |
-| 9 | Security | Price/total tampering | hidden price/total field | tampered fields | 303 | server recomputes totals from cart/DB |
-| 10 | Security | CSRF | cross-site POST, no token | valid fields | 403 | rejected by CSRF middleware (§7.5) |
-| 11 | Method | Wrong verb | — | `DELETE /shop/checkout` | 405 | Method Not Allowed |
+| 1 | Happy | Guest order | cart, valid fields | all fields | 303 → `/shop/orders/{number}` | order + items `pending_payment`; `owner_ref=guest:<sid>`; stock decremented; cart empty |
+| 2 | Happy | Signed-in order | logged in | — | 303 | `owner_ref=user:<id>`, `user_id` set |
+| 3 | Edge | Snapshot integrity | order placed, product edited | edit title/price | — | item keeps original |
+| 4 | Edge | Re-price at checkout | cart line price stale (product price changed after add) | valid | 303 | order uses **DB** price 🚩 |
+| 5 | Edge | Product unpublished after add | archived | valid | **409** 🚩 | no order, stock unchanged |
+| 6 | Edge | Empty cart | — | valid | **400** 🚩 | `ErrEmptyCart` |
+| 7 | Edge | Out of stock | qty > stock | valid | **409** 🚩 | no order, stock unchanged (rollback) |
+| 8 | Boundary | qty == stock | — | valid | 303 | stock 0 |
+| 9 | Validation | Missing field | no email | — | 400 | form re-rendered with error, no order |
+| 10 | Validation | Invalid email | `notanemail` | — | 400 | |
+| 11 | State | Double submit | same cart twice | ×2 | 303 then 400 | cart cleared on first |
+| 12 | Security | Total tampering | hidden `total` field | — | 303 | server recomputes |
+| 13 | Security | CSRF missing | — | — | 403 | |
+| 14 | Method | Wrong verb | — | `DELETE` | 404 (fallback) | |
 
 #### `GET /shop/orders/{number}`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | View order | order `N` exists | `GET …/N` | 200 | items, totals, status |
-| 2 | Not found | Unknown number | — | `GET …/ZZZ` | 404 | NotFound shell |
-| 3 | Security | IDOR — guest | guess another's number, not logged in | `GET …/<other>` | 200 | number is high-entropy/unguessable (§12); no enumeration |
-| 3b | Security | IDOR — authed | logged-in user requests an order not their `UserID` | `GET …/<other>` | 404 | scoped by `UserID` (§12) |
-| 4 | Method | Wrong verb | — | `POST …/N` | 405 | Method Not Allowed |
+| 1 | Happy | View | order `N` | `GET …/N` | 200 | items, totals, status |
+| 2 | Not found | Unknown | — | `GET …/ZZZ` | **404** | |
+| 3 | Security | Guest with number | not logged in, someone else's number | `GET …/<other>` | 200 🚩 | number is the guard; no enumeration |
+| 4 | Security | Authed, not owner | logged in, order belongs to another user | `GET …/<other>` | **404** 🚩 | scoped; never 403 |
+| 5 | Method | Wrong verb | — | `POST …/N` | 404 (fallback) | |
 
-### 10.6 Admin CMS (protected)
+### 10.5 Admin CMS
 
-**Admin access-control matrix** — applies to **every** `/shop/admin/*` route (assert once per route, or via a shared helper):
+**Access-control matrix** — assert for **every** `/shop/admin*` route including the two exact
+patterns (`/shop/admin`, `/shop/admin/`), via a table over all routes:
 
-Failure is content-negotiated (decided, §7.6/§12): browsers get a redirect to `/login`, JSON callers
-get a status code.
+| # | Scenario | State | Status | Result |
+|---|---|---|---|---|
+| 1 | Unauthenticated browser | no session, `Accept: text/html` | 302 | `Location: /login?next=…`; handler never runs |
+| 2 | Unauthenticated API | `Accept: application/json` | 401 | |
+| 3 | Invalid session cookie | garbage cookie | 302 / 401 | per negotiation |
+| 4 | Role `user` | logged in | 403 | |
+| 5 | Role `admin` | logged in | 2xx / 3xx | proceeds |
+| 6 | User row deleted | valid cookie, row gone | 302 / 401 | middleware re-checks |
+| 7 | Admin POST without CSRF | admin session | 403 | |
 
-| # | Scenario | State | Request | Expected status | Expected result |
+Per-endpoint tables assume an admin session **with** a valid `csrf_token`.
+
+#### `GET /shop/admin` · `GET /shop/admin/products` · `GET /shop/admin/products/new`
+
+| # | Type | Endpoint | Scenario | Status | Result |
 |---|---|---|---|---|---|
-| 1 | Unauthenticated (browser) | no session cookie, `Accept: text/html` | any `/shop/admin/*` | 302 | redirect to `/login?next=…`; handler never runs |
-| 2 | Unauthenticated (API) | no session cookie, `Accept: application/json` | any admin route | 401 | Unauthorized; handler never runs |
-| 3 | Invalid/expired session | malformed cookie | any admin route | 302 / 401 | per content negotiation |
-| 4 | Authenticated non-admin | `role=user` session | any admin route | 403 | Forbidden (no redirect loop) |
-| 5 | Authenticated admin | `role=admin` session | any admin route | 2xx/3xx | proceeds per endpoint |
-| 6 | Session user deleted | valid cookie, user row gone | any admin route | 302 / 401 | middleware re-checks user, then negotiates |
-| 7 | CSRF missing/bad on mutation | admin session, POST without token | any admin `POST` | 403 | `bad CSRF token` (§7.5) |
+| 1 | Happy | `/shop/admin` | dashboard | 200 | counts + links |
+| 2 | Edge | `/shop/admin/` | trailing slash | 301 → `/shop/admin` | still guarded (matrix row 1 applies) |
+| 3 | Happy | `/products` | all statuses | 200 | draft+published+archived, edit/delete links |
+| 4 | Happy | `/products` | empty | 200 | empty state |
+| 5 | Happy | `/products/new` | blank form | 200 | `action=/shop/admin/products`, `csrf_token` |
+| 6 | Method | all | wrong verb | 404 (fallback) | |
 
-Per-endpoint tables below assume an **admin session** and omit the AuthN/AuthZ rows covered above.
+#### `POST /shop/admin/products`
 
-#### `GET /shop/admin/` · `GET /shop/admin/products` · `GET /shop/admin/products/new`
-
-| # | Type | Endpoint | Scenario | Request | Expected status | Expected result |
-|---|---|---|---|---|---|---|
-| 1 | Happy | `/shop/admin/` | Dashboard | `GET` | 200 | counts + links |
-| 2 | Happy | `/shop/admin/products` | List all statuses | `GET` | 200 | draft+published+archived, edit/delete links |
-| 3 | Happy | `/shop/admin/products` | Empty | `GET` | 200 | empty-state |
-| 4 | Happy | `/shop/admin/products/new` | Blank form | `GET` | 200 | empty form, `action=/shop/admin/products` |
-| 5 | Method | all three | Wrong verb | `POST`/`PUT` | 405 | Method Not Allowed |
-
-#### `POST /shop/admin/products` (create)
-
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
-|---|---|---|---|---|---|---|
-| 1 | Happy | Create published | admin, valid multipart | `title,price=12.99,status=published,sku,description` | 303 | Product row, slug from title, `PriceCents=1299`; redirect list |
-| 2 | Happy | Create draft | — | `status=draft` | 303 | created as draft |
-| 3 | Edge | Dollars → cents | — | `price=12.99` | 303 | `PriceCents=1299` |
-| 4 | Boundary | Free item | — | `price=0` | 303 | `PriceCents=0` allowed |
-| 5 | Validation | Missing title | — | omit `title` | 400 | error, no row |
-| 6 | Validation | Invalid price | — | `price=abc` / `price=-5` | 400 | error, no row |
-| 7 | Edge | Slug collision | title maps to existing slug | valid | 303 | auto-suffixed slug (`-2`, `-3`, …) per §12; created |
-| 8 | Security | XSS in fields | — | `title=<script>` | 303 | stored raw, escaped on render |
-| 9 | Method | Wrong verb | — | `PUT /shop/admin/products` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | Create published | `title,price=12.99,status=published,sku,stock_qty,description` | 303 → list | row; slug from title; `price_cents=1299` |
+| 2 | Happy | Create draft | `status=draft` | 303 | |
+| 3 | Boundary | Free item | `price=0` | 303 | `price_cents=0` |
+| 4 | Validation | Missing title | — | 400 | form re-rendered, no row |
+| 5 | Validation | Bad price | `abc`, `-5` | 400 | |
+| 6 | Validation | Bad status | `status=banana` | 400 | |
+| 7 | Edge | Slug collision | title maps to existing slug | 303 | `-2` suffix 🚩 |
+| 8 | Security | XSS | `title=<script>` | 303 | stored raw, escaped on render |
+| 9 | Method | Wrong verb | `PUT` | 404 (fallback) | |
 
 #### `GET /shop/admin/products/{id}/edit`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result |
-|---|---|---|---|---|---|---|
-| 1 | Happy | Prefilled form | product `id=1` | `GET …/1/edit` | 200 | form with values + existing images |
-| 2 | Not found | Unknown id | — | `GET …/999/edit` | 404 | NotFound |
-| 3 | Boundary | Non-numeric id | — | `GET …/abc/edit` | 404 / 400 | handled |
-| 4 | Method | Wrong verb | — | `POST …/1/edit` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | Prefilled | `…/1/edit` | 200 | values, images, `csrf_token` |
+| 2 | Not found | Unknown | `…/999/edit` | 404 | |
+| 3 | Boundary | Non-numeric / zero | `…/abc/edit`, `…/0/edit` | 404 | `parseID` rejects |
+| 4 | Method | Wrong verb | `POST …/1/edit` | 404 (fallback) | |
 
-#### `POST /shop/admin/products/{id}` (update)
+#### `POST /shop/admin/products/{id}`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
-|---|---|---|---|---|---|---|
-| 1 | Happy | Update fields | product `id=1` | `title,price,status` | 303 | row updated; redirect |
-| 2 | State | Publish draft | draft product | `status=published` | 303 | now visible on storefront |
-| 3 | State | Archive | published product | `status=archived` | 303 | hidden from storefront |
-| 4 | Not found | Unknown id | — | `POST …/999` | 404 | NotFound |
-| 5 | Validation | Invalid price | — | `price=-1` | 400 | no change |
-| 6 | Boundary | Non-numeric id | — | `POST …/abc` | 404 / 400 | handled |
-| 7 | Method | Wrong verb | — | `DELETE …/1` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | Update | fields | 303 | row updated |
+| 2 | State | Publish draft | `status=published` | 303 | visible on storefront |
+| 3 | State | Archive | `status=archived` | 303 | hidden; `GET /shop/products/{slug}` → 404 |
+| 4 | Not found | Unknown | `…/999` | 404 | |
+| 5 | Validation | Bad price | `-1` | 400 | unchanged |
+| 6 | Method | Wrong verb | `DELETE` | 404 (fallback) | |
 
 #### `POST /shop/admin/products/{id}/delete`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
-|---|---|---|---|---|---|---|
-| 1 | Happy | Delete | product `id=1` | `POST …/1/delete` | 303 | soft-deleted (`DeletedAt`); gone from lists |
-| 2 | Not found | Unknown id | — | `POST …/999/delete` | 404 | NotFound |
-| 3 | State | Delete twice | — | `POST …/1/delete` ×2 | 303 → 404 | second no-op/404 |
-| 4 | Edge | Referenced by orders | product has OrderItems | `POST …/1/delete` | 303 | OrderItems keep snapshot (no cascade) |
-| 5 | Method | Wrong verb | — | `GET …/1/delete` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | Delete | `…/1/delete` | 303 | soft-deleted; gone from lists and storefront |
+| 2 | Not found | Unknown | `…/999/delete` | 404 | |
+| 3 | State | Twice | ×2 | 303 then 404 | |
+| 4 | Edge | Referenced by orders | product with order lines | 303 | order lines unchanged |
+| 5 | Method | Wrong verb | `GET` | 404 (fallback) | |
 
 #### `POST /shop/admin/products/{id}/images`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
-|---|---|---|---|---|---|---|
-| 1 | Happy | Upload image | product `id=1`, valid PNG | multipart `image` | 303 | file under `public/products/`, ProductImage row, `/public/…` URL; redirect edit |
-| 2 | Validation | No file | — | no `image` field | 400 | error |
-| 3 | Validation | Non-image type | upload `.exe` | multipart | 400 | rejected by `image/*` allow-list + sniff (§8, §12) |
-| 4 | Boundary | Too large (>10MB) | — | big file | 400 / 413 | rejected |
-| 5 | Not found | Unknown product id | — | `POST …/999/images` | 404 | NotFound |
-| 6 | Security | Filename traversal | `filename=../../x` | multipart | 303 | sanitized via `filepath.Base` |
-| 7 | Method | Wrong verb | — | `GET …/1/images` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | PNG | multipart `image` | 303 → edit | file under `public/products/`, row with `/public/products/…` URL |
+| 2 | Validation | No file | — | 400 | |
+| 3 | Validation | Not an image (sniffed) | `.exe` bytes with `Content-Type: image/png` | 400 | header ignored, sniff rejects |
+| 4 | Boundary | > 10 MB, `Content-Length` set | — | **413** | rejected by `maxBody` before `CSRF()` reads the body |
+| 4b | Boundary | > 10 MB, chunked | no `Content-Length` | 403 | `MaxBytesReader` fails the form parse inside `CSRF()`; accepted trade-off (§4.3) |
+| 5 | Not found | Unknown product | `…/999/images` | 404 | |
+| 6 | Security | Filename traversal | `filename=../../x.png` | 303 | stored name is server-generated |
+| 7 | Method | Wrong verb | `GET` | 404 (fallback) | |
 
-#### `GET /shop/admin/categories` · `POST /shop/admin/categories`
+#### `GET` / `POST /shop/admin/categories`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
-|---|---|---|---|---|---|---|
-| 1 | Happy | List + form | admin | `GET /shop/admin/categories` | 200 | categories list + inline create form |
-| 2 | Happy | Create | admin | `POST name,description` | 303 | Category row, slug from name; redirect |
-| 3 | Edge | Parent category | parent exists | `POST name,parent_id=1` | 303 | nested category |
-| 4 | Validation | Missing name | — | `POST` (no name) | 400 | error |
-| 5 | Edge | Duplicate slug | name collides | `POST name` | 303 | auto-suffixed slug per §12; created |
-| 6 | Validation | Invalid parent_id | parent 999 | `POST parent_id=999` | 400 🚩 | error / ignored |
-| 7 | Security | XSS name | — | `POST name=<x>` | 303 | escaped on render |
-| 8 | Method | Wrong verb | — | `PUT /shop/admin/categories` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | List + form | `GET` | 200 | |
+| 2 | Happy | Create | `name,description` | 303 | slug from name |
+| 3 | Edge | Nested | `parent_id=1` | 303 | |
+| 4 | Validation | Missing name | — | 400 | |
+| 5 | Edge | Duplicate slug | — | 303 | `-2` suffix |
+| 6 | Validation | Unknown `parent_id` | `999` | 400 🚩 | |
+| 7 | Security | XSS | `name=<x>` | 303 | escaped on render |
+| 8 | Method | Wrong verb | `PUT` | 404 (fallback) | |
 
 #### `GET /shop/admin/orders` · `GET /shop/admin/orders/{number}`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result |
-|---|---|---|---|---|---|---|
-| 1 | Happy | List orders | orders exist | `GET /shop/admin/orders` | 200 | number, status, total, email |
-| 2 | Happy | Empty | none | `GET /shop/admin/orders` | 200 | empty-state |
-| 3 | Edge | Filter by status | orders in mixed states | `?status=paid` | 200 🚩 | filtered (if implemented) |
-| 4 | Happy | Order detail | order `N` | `GET …/N` | 200 | item snapshots, totals, shipping, status control |
-| 5 | Not found | Unknown number | — | `GET …/ZZZ` | 404 | NotFound |
-| 6 | Method | Wrong verb | — | `PUT …/N` | 405 | Method Not Allowed |
+| # | Type | Scenario | Request | Status | Result |
+|---|---|---|---|---|---|
+| 1 | Happy | List | `GET` | 200 | number, status, total, email |
+| 2 | Happy | Empty | — | 200 | |
+| 3 | Happy | Filter | `?status=paid` | 200 | filtered 🚩 (implemented) |
+| 4 | Happy | Detail | `…/N` | 200 | snapshots, totals, shipping, status form |
+| 5 | Not found | Unknown | `…/ZZZ` | 404 | |
+| 6 | Method | Wrong verb | `PUT …/N` | 404 (fallback) | |
 
 #### `POST /shop/admin/orders/{number}/status`
 
-| # | Type | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
+| # | Type | Scenario | State | Request | Status | Result |
 |---|---|---|---|---|---|---|
-| 1 | Happy | Mark paid | order `N` = pending | `status=paid` | 303 | status updated; redirect detail |
-| 2 | Happy | Fulfil | order paid | `status=fulfilled` | 303 | updated |
-| 3 | Happy | Cancel | order pending/paid | `status=cancelled` | 303 | updated (consider restock 🚩) |
-| 4 | State | Same status | pending → pending | `status=pending_payment` | 303 | no-op OK |
-| 5 | State | Illegal transition | paid → pending | `status=pending_payment` | 400 | rejected by the state-machine guard (§12); status unchanged |
-| 6 | Validation | Invalid status value | — | `status=banana` | 400 | rejected, unchanged |
-| 7 | Not found | Unknown number | — | `POST …/ZZZ/status` | 404 | NotFound |
-| 8 | Security | CSRF | cross-site POST, no token | `status=paid` | 403 | rejected by CSRF middleware (§7.5) |
-| 9 | Method | Wrong verb | — | `GET …/N/status` | 405 | Method Not Allowed |
+| 1 | Happy | Mark paid | pending | `status=paid` | 303 → detail | `paid_at` set |
+| 2 | Happy | Fulfil | paid | `status=fulfilled` | 303 | |
+| 3 | Happy | Cancel pending | pending | `status=cancelled` | 303 | **restocked** 🚩 |
+| 4 | Happy | Cancel paid | paid | `status=cancelled` | 303 | restocked |
+| 5 | State | Same status | pending | `status=pending_payment` | 303 | no-op |
+| 6 | State | Illegal | paid → pending; fulfilled → cancelled | — | 400 | unchanged |
+| 7 | Validation | Bad value | `banana` | 400 | |
+| 8 | Not found | Unknown | `…/ZZZ/status` | 404 | |
+| 9 | Security | CSRF missing | — | 403 | |
+| 10 | Method | Wrong verb | `GET` | 404 (fallback) | |
 
-### 10.7 Cross-cutting & routing
+### 10.6 Cross-cutting & routing
 
-| # | Scenario | Preconditions / state | Request | Expected status | Expected result / side effects |
-|---|---|---|---|---|---|
-| 1 | Unknown path | — | `GET /shop/nonexistent` | 404 | NotFound shell |
-| 2 | Method-not-allowed | registered path, wrong verb | `DELETE /shop/products` | 405 | Method Not Allowed |
-| 3 | Static assets still served | — | `GET /static/css/main.css` | 200 | CSS from embed FS |
-| 4 | Public assets still served | — | `GET /public/favicon.svg` | 200 | served from disk |
-| 5 | Nav link present | — | `GET /shop/` | 200 | header includes `/shop` link |
-| 6 | Session cookie attributes | first cart interaction | `POST /shop/cart/add` | 303 | `Set-Cookie sid` HttpOnly, `Path=/`, SameSite=Lax (shared with booking, §7.3) |
-| 7 | Base shell integrity | — | `GET /shop/` | 200 | dark-mode script, Alpine CDN, `main.css` link |
-| 8 | Admin auth uniformity | unauth request to each admin route | table over all `/shop/admin/*` | 302 / 401 | browser → `/login`, JSON → 401 (§7.6); every route blocked |
-| 9 | CSRF token presence | state-changing forms | `GET` cart/checkout/admin forms | 200 | hidden `csrf_token` field present (§7.5) |
-| 10 | Trailing slash | — | `GET /shop` | 301 | → `/shop/` (canonical group root, §12) |
-| 11 | Security headers | — | `GET` any page | 200 🚩 | consider CSP / `X-Content-Type-Options` |
+| # | Scenario | Request | Status | Result |
+|---|---|---|---|---|
+| 1 | Unknown shop path hits the shop fallback, not the site catch-all | `GET /shop/nonexistent` | **404** 🚩 | shop not-found page; proves `/shop/` fallback + exact landing (§4.3) |
+| 2 | Unknown admin path is still guarded | `GET /shop/admin/nonexistent` unauth / as `user` / as admin | 302 or 401 / 403 / **404** | `AdminMiddleware` runs before the guarded fallback; existence of admin routes never leaks to anonymous probes |
+| 3 | Wrong verb hits the shop fallback, not the site catch-all | `DELETE /shop/products` | **404** | shop not-found page |
+| 4 | Site catch-all untouched | `GET /no-such-page` | 200 | `test/mount_seam_test.go` row still passes |
+| 5 | Landing is exact, not a subtree | `GET /shop/` | 301 → `/shop` | and `GET /shop` → 200 |
+| 6 | Nav link | `GET /shop` | 200 | header contains `href="/shop"` |
+| 7 | Shell integrity | `GET /shop` | 200 | `csrf-token` meta, `main.css` link |
+| 8 | User menu | logged in, `GET /shop` | 200 | shell renders the user menu (proves `OptionalAuthMiddleware` reaches shop routes) |
+| 9 | `sid` cookie attributes | first `POST /shop/cart/add` | 303 | HttpOnly, Path=/, SameSite=Lax |
+| 10 | Every form carries the token | `GET` cart / checkout / admin forms | 200 | hidden `csrf_token` present |
 
-### 10.8 Coverage checklist before merge
+### 10.7 Coverage checklist before merge
 
-- [ ] Every endpoint in §4.4 has a happy-path row **and** its `405` wrong-verb row.
-- [ ] Every `/shop/admin/*` route asserts the access-control matrix (browser 302 / JSON 401 unauth, 403 non-admin).
-- [ ] Cart lifecycle: add → merge → update → remove → cookie creation.
-- [ ] Checkout: success (stock ↓, cart cleared), empty-cart, out-of-stock rollback, validation.
-- [ ] All 🚩 design decisions resolved and the assertion updated to the chosen behavior.
+- [ ] Every route in §4.3 has a happy row and a wrong-verb (404 via fallback) row.
+- [ ] Every `/shop/admin*` route (including the two exact patterns) passes the access-control matrix.
+- [ ] Cart lifecycle: add → merge → update → remove → cookie creation → login merge.
+- [ ] Checkout: success (stock ↓, cart cleared), re-price, unavailable, empty, out-of-stock rollback, validation, double submit.
+- [ ] Status transitions incl. restock on cancel.
+- [ ] Every 🚩 assertion matches §12.
 
 ---
 
 ## 11. Phased milestones
 
-All shared infrastructure — **auth/identity (PR #15)**, Postgres, Valkey — has **landed on `master`**,
-so the shop has no "build the foundation" phase. It only **consumes** the shared layer and wires the
-middleware onto its own routes.
+Each phase is one PR with an exit criterion. Phase 0 is deliberately tiny: it is the shop's
+entire conflict surface with the parallel booking work, so it lands first and rebases cheaply.
 
-0. **Consume the shared auth layer (§7).** Import `internal/server/authentication`; mount `CSRF()` on
-   the shop group and `AdminMiddleware` on `/shop/admin/*`; register the `sm.*` models in the merged
-   `AutoMigrate`. **Exit:** `CurrentUser`/`OwnerRef` usable from a shop handler; a tokenless shop
-   `POST` is CSRF-rejected; `/shop/admin` gates correctly. (Raise the soft-auth gap, §7.8, so cart
-   ownership can move from raw `sid` to `OwnerRef`.)
-1. **Data + domain** — `sm.*` models on the merged `AutoMigrate`, `Catalog`, `Money`, `Slugify`, unit
-   tests. No UI.
-2. **Storefront read path** — `/shop`, `/shop/products`, `/shop/products/{slug}`, category pages;
-   templ views; nav entry. Seed a few products via a tiny CLI/seed to view it.
-3. **Cart** — `CartStore` (Valkey + DB fallback), keyed on the raw `sid` (→ `OwnerRef` once soft-auth
-   lands, §7.3), add/update/remove, cart page, count badge.
-4. **Checkout (mock)** — shipping form, `PlaceOrder`, cart-clear on success, confirmation page,
-   `pending_payment` orders.
-5. **Admin CMS** — product CRUD, image upload, category CRUD, order list/detail/status (behind the
-   shared `api_auth.AdminMiddleware`).
-6. **Polish** — pagination, search/filter, empty states, 404s, tests, Tailwind `@source`.
+0. **Seams** — first clear the two `master` defects in §1 if the parallel work has not
+   (`scheduler.go` build break; `MigrateCmd` unregistered). Then
+   `internal/server/shop/{api.go,models.go}` with an `API` exposing only `Landing` and
+   `NotFound`, and an empty `Models()`; `routes/shop.go` with `MountShop` registering
+   `GET /shop`, `GET /shop/{$}` → 301, and the `/shop/` fallback; the one-liners in
+   `server.go`, `database.go`, `nav.go`. **Exit:** `go build ./...` passes; `GET /shop` renders
+   through the shell with the user menu; `GET /shop/` → 301; `GET /shop/nonexistent` → 404;
+   `test/shop_mount_test.go` pins those (a new file, so the parallel work's edits to
+   `mount_seam_test.go` never conflict); `clair migrate` is a runnable command. (If
+   `internal/server/routes/` has not landed, ship a games-style `shop.Mount` and move it in
+   the PR that lands the package.)
+1. **Data + domain** — the six models, `Models()`, `Catalog`, `FormatCents`, `Slugify`/`UniqueSlug`,
+   `Cart` + both stores, `PlaceOrder`, `Transition`, `MigrateGuest`, `ManualProvider`; unit tests
+   §10.1. No UI beyond Phase 0's placeholder.
+2. **Storefront reads** — landing, product list (search, category, pagination), product detail,
+   category page; `shop.Seed` wired into `clair seed`; Tailwind `@source`. Tests §10.2, §10.6.
+3. **Cart** — `CartStore` wired in `NewAPI`, add/update/remove/view, guest migrator registered,
+   cart-count badge in the header (Alpine, optional). Tests §10.3.
+4. **Checkout** — form, validation, `PlaceOrder`, cart clear, confirmation page, owner scoping.
+   Tests §10.4.
+5. **Admin CMS** — guarded `/shop/admin/` fallback, product CRUD, upload (`maxBody` outside
+   `CSRF()`), categories, orders list/detail/status. Tests §10.5.
+6. **Polish** — empty states, pagination links, `?status=` filter, `.gitignore`, coverage
+   checklist §10.7.
 
-Later / additive: real `PaymentProvider` (Stripe), S3 image store, multi-vendor (`ShopVendor` model +
-per-vendor scoping and vendor admin), discounts/coupons, `shop_inventories` stock reservations.
+Later / additive, all inside `shop_*`: `StripeProvider` + `ShopPayment` + `/webhooks/shop/{provider}`;
+`ImageStore` on S3; `SweepCarts` on the scheduler; multi-vendor (`ShopVendor`, per-vendor
+scoping); discounts; stock reservations (`ShopReservation`) if oversell at checkout ever becomes
+a real problem.
 
 ---
 
 ## 12. Decisions (locked)
 
-**Cross-domain (reconciled with booking):** shop and booking **share one PostgreSQL database**; shop
-tables are prefixed `shop_*` (types `Shop*`, package `internal/shop/models`) disjoint from
-`booking_*`. The shared auth/identity/session/CSRF layer **landed on `master` (PR #15)** in
-`internal/server/authentication`; the shop **consumes** it (§7) — one `User`, roles `user`/`admin`,
-one `AdminMiddleware`, one `CurrentUser`/`sid`/`OwnerRef`, one `CSRF`. The shop builds no auth of its
-own.
-
-> **✅ Resolved — `OwnerRef` on-disk format.** The shared layer shipped `OwnerRef` as
-> `"user:<id>"` / `"guest:<sid>"`; this is now the **locked** persisted format for shop orders and
-> booking holds/orders alike (booking's earlier `sess:abc` examples are superseded).
-
-**Shop-only (locked — each was a 🚩 in §10):**
-
 | Question | Decision |
 |---|---|
-| Guest vs login-required checkout | **Guest allowed**; owner is `OwnerRef` (`ShopOrder.OwnerRef`), `UserID` denormalized when authed. |
-| Cart ownership key | `OwnerRef` once soft-auth lands (§7.3/§7.8); **interim** raw `sid` to avoid a split cart. |
-| Guest cart on login | **Merge** the `guest:<sid>` cart into the `user:<id>` cart (§7.4). |
-| Roles | `user` / `admin` (`api_auth.RoleUser`/`RoleAdmin`) — generic, from the central layer. |
-| Launch currency | **Single-currency USD**; `Currency`/`PriceCents` already per-row for later. |
-| CMS auth failure mode | **Content-negotiated**: browsers → 302 `/login?next=…`; JSON → 401; logged-in non-admin → 403 (§7.6). |
-| Order-number IDOR (`GET /shop/orders/{number}`) | **Unguessable high-entropy `Number`** (`api_auth.SecureToken()`, §7.1 — not the ~47-bit game id, since for guests it's the only guard); for authenticated buyers also scope by `OwnerRef`. No enumeration. (A short human-friendly display code, if wanted, is a separate non-security field.) |
-| Slug collision (product/category) | **Auto-suffix** `-2`, `-3`, … in `Slugify` on conflict; slug stays `uniqueIndex`. |
-| Illegal order-status transition | **State-machine guard**: an allowed-transitions map; anything else → 400, status unchanged. |
-| Image upload validation | **≤10MB + `image/*` allow-list** (`hdr.Content-Type`, plus `http.DetectContentType` sniff), §8. |
-| Unknown-category filter | **Empty list (200)**, consistent with search — not 404. |
-| Canonical trailing slash | Canonical **with** trailing slash on group roots (`/shop/`); register the bare form to 301 to it. |
+| Kernel reuse | **No.** Independent `shop_*` order/stock/payment. Rejected reuse 2026-09-02. |
+| Model location | `internal/database/models/shop_*.go`, per master convention. |
+| Route shape | `routes/shop.go` + `shop.NewAPI`; games-style `Mount` only as a stopgap. |
+| Rendering | Server forms + PRG; Alpine optional. |
+| Guest vs login checkout | **Guest allowed**; `OwnerRef` owns cart and order. |
+| Cart key | `OwnerRef` from day one (`OptionalAuthMiddleware` is global). |
+| Guest cart on login | **Merge** via `RegisterGuestMigrator("shop", …)`; pending guest orders re-pointed. |
+| Cart prices | Display cache only; **checkout re-prices from the database** and refuses unpublished lines (409). |
+| Canonical shop URL | **Bare `/shop`** and `/shop/admin`; trailing-slash forms 301 to them. Reason: exact ServeMux patterns; a `/shop/` subtree pattern would swallow unknown paths. |
+| Not found | Real `404` status + `pages.NotFound()` body, for unknown product/category/order and unknown `/shop/*` paths. |
+| Order number | `SecureToken()`; guest view guarded by the number alone; authed non-owner → 404. |
+| Slug collision | `UniqueSlug` suffixes `-2`, `-3`, …; `uniqueIndex` remains the backstop. |
+| Order status | State-machine map (§3.8); illegal → 400; cancel of pending/paid **restocks**; fulfilled is terminal. |
+| Image upload | ≤ 10 MB via `maxBody` middleware **outside** `CSRF()` (413; chunked oversize → 403); type by **sniff only**; server-generated filenames. |
+| Wrong verb on a shop route | **404** from the shop's subtree fallback, never 405: the site's method-less `/` catch-all makes ServeMux's 405 path unreachable. Bare `POST /shop` reaches the site catch-all (200) and is not asserted. |
+| Unknown category filter | 200 + empty list (consistent with search). Unknown category **page** → 404. |
+| Roles | `user` / `admin` from the central layer. |
+| Currency | USD only at launch. |
+| Empty cart on `POST /checkout` | 400. Out of stock / unavailable: 409. |
+| Missing `product_id` on cart update/remove | 400. |
+| Unknown `parent_id` on category create | 400. |
+| Admin orders `?status=` filter | Implemented in Phase 5 (cheap, one `Where`). |
 
-These close the 🚩 they name; update each test assertion to the chosen behavior. A few 🚩 in §10 are
-**intentionally left open** (exact 4xx code for empty-cart/out-of-stock, optional order-status
-filter, `parent_id` validation, cancel-restock policy, security headers) — decide those at build time.
+Left open, decide at build time: security headers (CSP, `X-Content-Type-Options`) — site-wide,
+not the shop's; shipping cost (fixed 0 in `ShippingCents` until a rule exists).
+
+---
+
+## 13. Coordination with the parallel booking work
+
+The shop only touches four shared files, each with one added line (`server.go`, `database.go`,
+`nav.go`, `seed.go`). Everything else is new files. Two things to watch at rebase time:
+
+- **`internal/server/routes/` and `booking.NewAPI`** are in the parallel tree, not yet on
+  `master`. The shop's route table assumes them. If they land first, nothing changes; if the shop
+  lands first, Phase 0 ships a `shop.Mount` and the move is a rename.
+- **`clair seed`** does not exist on `master`; the parallel tree adds it for the Aurenor
+  catalog. If it has landed, adding `shop.Seed` is one call inside its `RunE` (the `Report`
+  logging is the only conflict-prone line); if not, the shop ships `clair seed-shop` (§3.10).
+- **`MigrateCmd` and the `scheduler.go` build break** (§1) are both fixed in the parallel tree's
+  `root.go` / `scheduler.go`. Whoever lands first carries the fix.
+
+Nothing in the shop imports `internal/booking`, `internal/appointments`, `internal/ticketing`
+or `internal/server/booking`, and nothing there imports the shop.
+
+---
+
+## 14. Changes from the previous revision (2026-09-02)
+
+Re-checked every claim against `master` at `a1b3215`. Corrections:
+
+| Was | Now | Why |
+|---|---|---|
+| "Soft-auth is a gap; key the cart on raw `sid` in the interim; raise upstream" (§7.3, §7.8, Phase 0) | Cart keyed on `OwnerRef` from day one | `OptionalAuthMiddleware` exists and is mounted on every app route (`server.go`). The gap is closed. |
+| Guest cart merge "after sign-in or lazily on next access" (§7.4) | `api_auth.RegisterGuestMigrator("shop", …)` in `NewAPI` | The hook exists; booking already uses it. |
+| Models in `internal/shop/models` aliased `sm`; booking said to use `bm/am/tm` packages | `internal/database/models/shop_*.go`, one file per model | That is the convention `database.go` documents and booking actually follows. The `bm/am/tm` claim was never true on `master`. |
+| Register models "inside `AutoMigrate` in `database.New`" | `shop.Models()` appended in `MigrationModels()`; `clair migrate` is explicit | PR #18 made migration an explicit step; `database.New` migrates only when `DATABASE_AUTO_MIGRATE` is truthy. (`MigrateCmd` is not yet registered in `root.go` on `master` — §1.) |
+| 404 for unknown `/shop/*` and 405 for wrong verbs, asserted against the real router | Shop-owned `/shop/` and `/shop/admin/` subtree fallbacks answering 404; wrong verb = 404; no 405 rows | The site's method-less `/` catch-all returns 200 for everything unmatched and makes ServeMux's 405 path unreachable; the previous tables would have failed on every such row. Registered on a real mux during review. |
+| `MaxBytesReader` inside the upload handler | `maxBody` middleware mounted outside `CSRF()` | `CSRF()` parses the multipart body (`PostFormValue`) before the handler runs, so a cap in the handler never sees the body. |
+| Guest migrator closure capturing the `API`'s cart store | `sync.Once` registration, closure captures only the Valkey client, store built from the `db` argument | The registry is append-only with no dedup and every `Routes()` call builds a new `API`; tests would register N migrators over N stale stores. |
+| "`clair seed` seeds Aurenor" stated as fact | Marked parallel-work only; `seed-shop` fallback | Neither `internal/cmd/seed.go` nor `internal/aurenor/` exists on `master`. |
+| `foreignKey:` "same technique as `BookingSlot`"; `gorm.Model` "like booking" | Both marked new for this domain | No booking model declares a GORM association or uses `gorm.Model`; nothing on `master` calls `Preload`. |
+| Route group inlined into `server.go` | `routes.MountShop` + `shop.NewAPI`, one line in `Routes()` | `master` mounts one line per domain; the parallel work moves the table to `routes/`. |
+| `web.Base("Not found", web.NotFound())` | `web.Base(api_auth.PageShell(w, r, title), pages.NotFound())` | The real signatures. `PageShell` is what mints the CSRF token and fills the user menu. |
+| Thread `CSRFToken(r)` into views | Use `shell.CSRFToken` from the `PageShell` already built; hidden `csrf_token` field | `CSRFToken(r)` alone does not persist a fresh token; `PageShell` does. |
+| Nav via `@NavItem` in `header.templ` | One entry in `components.NavLinks` | `nav.go` is the single source of truth now. |
+| testcontainers `TestMain` harness | Existing `DATABASE_URL` harness: `newRoutesServer`, `newAuthTestDB`, `createUser`, `jarClient`, `csrfMetaToken`, `testsupport.PostgresDB` | `master` has no testcontainers dependency and already has everything the tables need. |
+| Canonical `/shop/` with 301 from `/shop`; landing registered as `"GET /"` in the group | Canonical **`/shop`**; landing registered exactly (`GET /shop`, `GET /shop/{$}` → 301) | A `/shop/` pattern is a ServeMux subtree and would answer `/shop/anything` with the landing page instead of a 404 (the booking route table documents the same trap). |
+| 404 page implicit | Real `404` status via `notFound()` | The site's catch-all returns 200 for unknown paths; the shop should not inherit that for product/order lookups. |
+| `title LIKE ?` | `ILIKE` | Postgres `LIKE` is case-sensitive. |
+| Stock decrement ignored `res.Error`; cart prices trusted at checkout | `PlaceOrder` checks errors, re-prices from DB, refuses unpublished lines | The cart is a display cache; money comes from the database. |
+| Cancel-restock "🚩 consider" | Cancel of pending/paid restocks; fulfilled terminal | Otherwise a cancelled order leaks stock forever. |
+| Upload: client `Content-Type` + `filepath.Base(hdr.Filename)` | Sniff only; server-generated names | Client header is untrusted; a generated name removes the traversal question entirely. |
+| `ShopCart.ID` = `sid` | `ShopCart.OwnerRef` | The key is the owner reference, not the raw session id. |
+| §2.1 cited `docs/booking-system-design.md`, branch `docs/booking-system-design`, target branch `claude/optimistic-rubin-wpbnbm` | Removed | None of those exist on `master`. |
+| Phase 0 "consume auth" | Phase 0 "seams" (four one-liners + empty `API`) | Auth needs no phase; the conflict-prone lines do. |
+
+Kept unchanged: locked storefront/CMS bases, single tenancy, mock payments with a provider
+seam, `Shop*`/`shop_*` naming, guest checkout, merge-on-login, USD, `SecureToken` order
+numbers, slug suffixing, state-machine transitions, upload limits, unknown-category-filter
+semantics, the per-endpoint test matrices (rows corrected where the decisions above changed).
