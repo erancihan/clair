@@ -12,6 +12,7 @@ import (
 	"github.com/erancihan/clair/internal/server/booking"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/server/games"
+	"github.com/erancihan/clair/internal/server/routes"
 	"github.com/erancihan/clair/internal/utils"
 	"github.com/erancihan/clair/internal/utils/middleware"
 	"github.com/erancihan/clair/internal/utils/router"
@@ -79,6 +80,7 @@ func (s *backend) Routes() http.Handler {
 	// line belongs in its own package.
 	games.Mount(app, s.context)
 	booking.Mount(app, s.context)
+	routes.MountShop(app, s.context)
 
 	return mux
 }
