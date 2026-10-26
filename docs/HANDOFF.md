@@ -9,7 +9,7 @@ Booking (`feat/booking-systems`) finished roadmap phases A1–A3 and the Postgre
 | Branch | `feat/booking-systems` | `docs/shop-front-plan` |
 | Was at | main checkout | worktree `../temp/clair-shopfront` |
 | Base | `master` @ `a1b3215` | `master` @ `a1b3215` |
-| Status source | `docs/worldbuilding/aurenor.md` (roadmap) and the plan banners in `docs/superpowers/plans/` | `docs/shop-plan.md` |
+| Status source | `docs/wiki/roadmap.md` | `docs/shop-plan.md` |
 
 Both branches were committed as checkpoints at hand-off. Clean the history up when you open the PRs.
 
@@ -17,7 +17,7 @@ Both branches were committed as checkpoints at hand-off. Clean the history up wh
 
 - `docs/shop-plan.md` is revised against `master` (the uncommitted revision is now a commit).
 - Phase 0 ("seams") is written but has not been verified with a database: `internal/server/shop/{api.go,api_http.go,models.go}`, `internal/server/routes/shop.go`, `internal/web/pages/shop_storefront.templ`, `test/shop_mount_test.go`, and one-line additions to `server.go`, `database.go`, `nav.go`.
-- Locked decision: the shop has its own `shop_*` tables for orders, stock and payment. It does not use the booking engine.
+- Locked decision: the shop has its own `shop_*` tables for orders, stock and payment. It does not use the booking service.
 
 ## Merge order
 
@@ -34,5 +34,5 @@ The shop branch fixed the same two defects with a copy of an older booking `sche
 ## Rules that carry over
 
 - The owner signs commits with GPG. An agent proposes commit and rebase commands; the owner runs them.
-- Prose says "the booking engine", never "kernel".
+- Prose says "the booking service", never "kernel" or "engine".
 - No real place names, no "government", no public sign-in link in anything a user sees.

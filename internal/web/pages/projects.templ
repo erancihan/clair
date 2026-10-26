@@ -40,7 +40,7 @@ templ Projects() {
 							Aurenor — booking simulations
 						</h2>
 						<p class="mt-3 text-base text-zinc-600 dark:text-zinc-400">
-							An imaginary nation on the Gilt Coast, demoing the booking engine — two systems, a handful of institutions.
+							An imaginary nation on the Gilt Coast, demoing the booking service — two systems, a handful of institutions.
 						</p>
 					</div>
 
@@ -108,18 +108,18 @@ templ readmeRow(title string) {
 	</div>
 }
 
-// bookingReadme is the expandable explainer of how the booking engine behind
+// bookingReadme is the expandable explainer of how the booking service behind
 // every Aurenori institution works.
 templ bookingReadme() {
 	<div class="mt-14">
 		<h3 class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">How the booking system works</h3>
-		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">One booking engine behind every institution. Expand a topic.</p>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">One booking service behind every institution. Expand a topic.</p>
 		<div class="mt-4">
-			@readmeRow("One engine, two vocabularies") {
-				<p>Every institution runs on one booking engine. A hospital books <em>time slots</em>, a theater books <em>seats</em>, the consulate books <em>interviews</em> — underneath it is the same engine reserving a unit of a limited resource. Only the noun changes.</p>
+			@readmeRow("One service, two vocabularies") {
+				<p>Every institution runs on one booking service. A hospital books <em>time slots</em>, a theater books <em>seats</em>, the consulate books <em>interviews</em> — underneath it is the same service reserving a unit of a limited resource. Only the noun changes.</p>
 			}
 			@readmeRow("Capacity is an invariant, not a report") {
-				<p>The engine keeps <code>booked + held + blocked ≤ capacity</code> true at all times, enforced inside every write rather than reconciled by a nightly job — the mutation that would break it simply fails. Two people racing for the last seat: exactly one wins.</p>
+				<p>The booking service keeps <code>booked + held + blocked ≤ capacity</code> true at all times, enforced inside every write rather than reconciled by a nightly job — the mutation that would break it simply fails. Two people racing for the last seat: exactly one wins.</p>
 			}
 			@readmeRow("Availability is computed, never stored") {
 				<p>A schedule is a set of rules and exceptions — open hours, closures, per-slot capacity. Availability is derived from those rules against what is already booked or held, so there is no stale list of "free slots" to keep in sync.</p>

@@ -1,7 +1,7 @@
 {
   "name": "clair",
   "version": "1.0.0",
-  "description": "Personal site and services written in Go: web pages, games, and a booking engine.",
+  "description": "Personal site and services written in Go: web pages, games, and a booking service.",
   "scripts": {
     "css": "gulp css",
     "dev": "gulp"

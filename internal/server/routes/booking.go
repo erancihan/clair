@@ -26,8 +26,8 @@ import (
 // MountBooking registers every route the booking domain owns.
 //
 // The domain owns two path spaces because it serves two vocabularies over one
-// booking engine: /appointments for schedules and office hours, /events for
-// tickets and seats. They share the engine, the orders and the payment webhook,
+// booking service: /appointments for schedules and office hours, /events for
+// tickets and seats. They share the booking service, the orders and the payment webhook,
 // and differ only in what a reserved unit is called.
 //
 // Routes fall into four classes, and which class a route is in is the security
@@ -91,7 +91,7 @@ type bookingLimits struct {
 }
 
 // mountAppointments registers the /appointments path space: the office-hours
-// vocabulary over the booking engine.
+// vocabulary over the booking service.
 func mountAppointments(r *router.Router, api *booking.API, ctx server_context.BackEndContext, limits bookingLimits) {
 	r.Group("appointments", func(appointments *router.Router) {
 		// ---- public reads ----
@@ -145,7 +145,7 @@ func mountAppointments(r *router.Router, api *booking.API, ctx server_context.Ba
 }
 
 // mountEvents registers the /events path space: the ticketing vocabulary over
-// the same engine.
+// the same booking service.
 func mountEvents(r *router.Router, api *booking.API, ctx server_context.BackEndContext, limits bookingLimits) {
 	// ---- authenticated: running an event ----
 	//

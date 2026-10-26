@@ -1,5 +1,5 @@
 // Package booking is the HTTP layer for the booking domain: appointments and
-// ticketing, both sitting on the shared booking engine in internal/booking.
+// ticketing, both sitting on the shared booking service in internal/booking.
 //
 // Handlers here stay thin. They decode a request, resolve who is asking, call
 // into the domain packages and encode the answer; every rule about capacity,

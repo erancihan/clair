@@ -1,7 +1,7 @@
 # Clair
 
 A personal site and the services behind it, written in Go: server-rendered pages
-(templ + Tailwind + Alpine), a couple of games, and a booking engine that runs
+(templ + Tailwind + Alpine), a couple of games, and a booking service that runs
 the Aurenor simulations.
 
 ## Installation
@@ -106,7 +106,7 @@ make db-up && make test
 
 ## Road map
 
-The roadmap lives in `docs/worldbuilding/aurenor.md` (status) and
-`docs/superpowers/specs/2026-09-02-evaluation-and-roadmap-v2.md` (evidence
-and reasoning). Auth, sessions and the user model are done; the booking
-systems are built and the next work is stabilising them.
+The roadmap lives in `docs/wiki/roadmap.md`. How the booking service works,
+with sequence diagrams, is in `docs/wiki/booking-service.md`. Auth, sessions
+and the user model are done. The booking systems are built and the next work
+is CI gates, then a new deploy.

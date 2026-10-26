@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-// BookingOrderItem is domain-agnostic: it points at an engine hold and the
+// BookingOrderItem is domain-agnostic: it points at a booking-service hold and the
 // inventory row that hold covered. The inventory row's typed FK is what tells
 // the fulfiller what was actually reserved, which is why an item carries no
 // slot, tier or seat column of its own.

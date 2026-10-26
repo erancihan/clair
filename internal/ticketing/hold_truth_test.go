@@ -391,7 +391,7 @@ func TestClaimOfferRespectsBuyerCap(t *testing.T) {
 	base := time.Now()
 	// The waiter already owns one ticket, which is the whole cap. It has to be
 	// a captured ticket, not a live hold: a live hold on the same tier would be
-	// reused as the "offer" by the engine's one-active-hold-per-owner rule, and
+	// reused as the "offer" by the booking service's one-active-hold-per-owner rule, and
 	// the claim would fail for the wrong reason.
 	order, _, err := ticketing.HoldGA(db, tier, 1, ticketing.Buyer{OwnerRef: "guest:greedy"}, time.Hour, base, 1)
 	if err != nil {

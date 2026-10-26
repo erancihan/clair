@@ -1,6 +1,6 @@
 // Package appointments is the appointments domain: DST-correct availability
 // computation and the (free) office-hours booking flow, on top of the booking
-// booking engine. It never imports net/http.
+// booking service. It never imports net/http.
 package appointments
 
 import (

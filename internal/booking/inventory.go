@@ -1,4 +1,4 @@
-// Package booking is the shared booking engine: it owns capacity counting for
+// Package booking is the shared booking service: it owns capacity counting for
 // every bookable thing, independent of net/http. Domain modules (appointments,
 // ticketing) compose these primitives and map their own vocabulary onto them.
 //

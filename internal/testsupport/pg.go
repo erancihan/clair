@@ -1,5 +1,5 @@
 // Package testsupport provides shared helpers for integration tests that need a
-// real PostgreSQL database (the app is PostgreSQL-only; the booking engine relies
+// real PostgreSQL database (the app is PostgreSQL-only; the booking service relies
 // on partial indexes, FOR UPDATE [SKIP LOCKED], and RETURNING).
 //
 // It reads DATABASE_URL (the repo/CI convention; CI provides a postgres:16

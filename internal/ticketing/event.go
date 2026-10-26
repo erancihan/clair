@@ -1,5 +1,5 @@
 // Package ticketing is the ticketing domain: events with GA pools and assigned
-// seats, over the shared booking booking engine. It never imports net/http.
+// seats, over the shared booking service. It never imports net/http.
 package ticketing
 
 import (

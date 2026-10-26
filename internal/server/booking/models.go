@@ -5,13 +5,13 @@ import "github.com/erancihan/clair/internal/database/models"
 // Models returns the GORM models the booking domain owns, for the migration set
 // composed in internal/database.
 //
-// The list is grouped the way the domain is layered. The booking engine's
+// The list is grouped the way the domain is layered. The booking service's
 // tables come first: they are the ones every selling flow shares, and neither
 // appointments nor ticketing owns a counter of its own. The two front-end
-// domains follow, each mapping its own vocabulary onto that engine.
+// domains follow, each mapping its own vocabulary onto that service.
 func Models() []any {
 	return []any{
-		// Booking engine: the counter, the holds over it, and the money.
+		// Booking service: the counter, the holds over it, and the money.
 		&models.BookingInventory{},
 		&models.BookingHold{},
 		&models.BookingOrder{},

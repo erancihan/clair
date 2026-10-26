@@ -80,7 +80,7 @@ func NewAPI(bctx server_context.BackEndContext) *API {
 // on shutdown; nothing will signal a stream after it returns.
 func (a *API) Close() { a.hub.Close() }
 
-// ---- appointments: the office-hours vocabulary over the engine ----
+// ---- appointments: the office-hours vocabulary over the booking service ----
 
 func (a *API) Availability() http.HandlerFunc {
 	return availability(a.ctx, a.hub, a.availability)
@@ -106,7 +106,7 @@ func (a *API) DeleteRule() http.HandlerFunc      { return deleteRule(a.ctx) }
 func (a *API) AddException() http.HandlerFunc    { return addException(a.ctx) }
 func (a *API) DeleteException() http.HandlerFunc { return deleteException(a.ctx) }
 
-// ---- ticketing: the events vocabulary over the same engine ----
+// ---- ticketing: the events vocabulary over the same service ----
 
 func (a *API) CreateEvent() http.HandlerFunc { return createEvent(a.ctx) }
 func (a *API) EventSummary() http.HandlerFunc {

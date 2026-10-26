@@ -18,7 +18,7 @@ templ AurenorTheaters() {
 }
 
 // AurenorTheater is one theater's showings board, driven by the real ticketing
-// engine.
+// booking service.
 templ AurenorTheater(v Venue) {
 	@aurenorPage(v.Name, v.Location+" — pick a showing to choose seats.", theaterNotice) {
 		@theaterLive(v)
