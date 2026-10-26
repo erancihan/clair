@@ -235,7 +235,9 @@ func TestBooking_GuestWorkSurvivesLogin(t *testing.T) {
 		Order     models.BookingOrder `json:"order"`
 		HoldToken string              `json:"hold_token"`
 	}
-	json.NewDecoder(resp.Body).Decode(&held)
+	if err := json.NewDecoder(resp.Body).Decode(&held); err != nil {
+		t.Fatalf("decode held: %v", err)
+	}
 	resp.Body.Close()
 
 	var hold models.BookingHold

@@ -174,16 +174,6 @@ func showingAttr(v Venue, s aurenor.Showing) string {
 	return "showing(" + string(cfg) + ")"
 }
 
-// apptBookerAttr builds the x-data expression binding one card to its schedule.
-//
-// The argument is JSON rather than quoted literals because service titles carry
-// apostrophes ("Driver's Licence Renewal"); templ escapes the attribute and the
-// browser hands Alpine back the original text.
-func apptBookerAttr(c apptCard) string {
-	arg, _ := json.Marshal(map[string]string{"slug": c.ScheduleSlug, "title": c.Title})
-	return "apptBooker(" + string(arg) + ")"
-}
-
 // Venue is one institution instance in a collection (a theater, a hospital).
 // Exported so the mount seam can resolve a {slug} to the venue a detail page
 // renders.

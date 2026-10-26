@@ -1,0 +1,42 @@
+version: "2"
+
+# Baseline lint gate. CI runs this on every push and pull request.
+# Add exclusions here with a reason; do not disable a linter wholesale.
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+
+  settings:
+    staticcheck:
+      checks:
+        - all
+        # Defaults from staticcheck: package doc comments and naming style are
+        # not enforced on this tree.
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # Quick fix: drop an embedded field from a selector. The explicit form
+        # (tx.Dialector.Name()) says which embedded value answers the call.
+        - -QF1008
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests close response bodies, connections and files and set env vars
+      # as cleanup. A failure there cannot change what the test asserts, and
+      # checking each one buries the assertions.
+      - path: (_test\.go|^test/)
+        linters:
+          - errcheck
+        text: "Error return value of `(.+\\.Close|os\\.Setenv|os\\.Unsetenv)` is not checked"

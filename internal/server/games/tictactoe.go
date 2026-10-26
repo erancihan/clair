@@ -29,7 +29,7 @@ func (s *tictactoeService) CreateGame(ctx server_context.BackEndContext) http.Ha
 		instance, id := game.NewGame(gType)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"game_id": id,
 			"player":  "X", // Creator is always X in this simple implementation
 			"type":    instance.State.GameType,
@@ -75,7 +75,9 @@ func (s *tictactoeService) StreamGame(ctx server_context.BackEndContext) http.Ha
 				return
 			case ev := <-clientChan:
 				data, _ := json.Marshal(ev)
-				fmt.Fprintf(w, "data: %s\n\n", string(data))
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", string(data)); err != nil {
+					return
+				}
 				flusher.Flush()
 			}
 		}
@@ -108,7 +110,10 @@ func (s *tictactoeService) TakeAction(ctx server_context.BackEndContext) http.Ha
 			return
 		}
 
-		instance.MakeMove(player, req.Index)
+		if err := instance.MakeMove(player, req.Index); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}

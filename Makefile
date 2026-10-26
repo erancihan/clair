@@ -13,7 +13,7 @@ GO_BUILD_CMD := go build ${GO_ARGS} -ldflags "${LDFLAGS}"
 GNUMAKEFLAGS=-j3
 
 .PHONY: all deps assets build build-linux-amd64 dev run run-server run-scheduler migrate seed \
-        docker docker-build docker-run docker-dev tidy db-up db-down test
+        docker docker-build docker-run docker-dev tidy db-up db-down test lint
 
 all: build
 
@@ -83,5 +83,14 @@ db-down:
 # testing — requires a running PostgreSQL.
 # Point DATABASE_URL at it (defaults to the docker-compose.dev.yaml service):
 #   make db-up && make test
+# Same steps as .github/workflows/test.yaml, so a green `make test` means a
+# green CI run.
 test:
-	go test ./test/... -v
+	go generate ./...
+	go vet ./...
+	CGO_ENABLED=0 go build ./...
+	go test -race -count=1 ./...
+
+# lint with the .golangci.yml baseline (needs golangci-lint v2 on PATH)
+lint:
+	golangci-lint run ./...

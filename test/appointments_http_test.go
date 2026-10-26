@@ -199,7 +199,9 @@ func TestAppointmentsHTTP_FreeFlow(t *testing.T) {
 	resp = doJSON(t, host, "GET", avURL, nil)
 	mustStatus(t, resp, http.StatusOK, "availability")
 	var slots []map[string]any
-	json.NewDecoder(resp.Body).Decode(&slots)
+	if err := json.NewDecoder(resp.Body).Decode(&slots); err != nil {
+		t.Fatalf("decode slots: %v", err)
+	}
 	resp.Body.Close()
 	if len(slots) != 6 {
 		t.Fatalf("want 6 availability slots (09:00–11:30), got %d", len(slots))
@@ -213,7 +215,9 @@ func TestAppointmentsHTTP_FreeFlow(t *testing.T) {
 	var appt struct {
 		CancelToken string `json:"cancel_token"`
 	}
-	json.NewDecoder(resp.Body).Decode(&appt)
+	if err := json.NewDecoder(resp.Body).Decode(&appt); err != nil {
+		t.Fatalf("decode appt: %v", err)
+	}
 	resp.Body.Close()
 	if appt.CancelToken == "" {
 		t.Fatal("book response missing cancel_token")
@@ -263,7 +267,9 @@ func TestAppointmentsHTTP_PaidFlow(t *testing.T) {
 			ID uint `json:"id"`
 		} `json:"order"`
 	}
-	json.NewDecoder(resp.Body).Decode(&held)
+	if err := json.NewDecoder(resp.Body).Decode(&held); err != nil {
+		t.Fatalf("decode held: %v", err)
+	}
 	resp.Body.Close()
 	if held.Order.ID == 0 {
 		t.Fatal("hold response missing order id")
@@ -305,7 +311,9 @@ func availabilityCount(t *testing.T, c *http.Client, ts *httptest.Server, slug s
 	resp := doJSON(t, c, "GET", url, nil)
 	mustStatus(t, resp, http.StatusOK, "availability")
 	var slots []map[string]any
-	json.NewDecoder(resp.Body).Decode(&slots)
+	if err := json.NewDecoder(resp.Body).Decode(&slots); err != nil {
+		t.Fatalf("decode slots: %v", err)
+	}
 	resp.Body.Close()
 	return len(slots)
 }
@@ -336,7 +344,9 @@ func TestAppointmentsHTTP_RulesAndExceptions(t *testing.T) {
 	var rule struct {
 		ID uint `json:"id"`
 	}
-	json.NewDecoder(resp.Body).Decode(&rule)
+	if err := json.NewDecoder(resp.Body).Decode(&rule); err != nil {
+		t.Fatalf("decode rule: %v", err)
+	}
 	resp.Body.Close()
 	if n := availabilityCount(t, host, ts, slug, day); n != 6 {
 		t.Fatalf("after add rule want 6 slots, got %d", n)
@@ -349,7 +359,9 @@ func TestAppointmentsHTTP_RulesAndExceptions(t *testing.T) {
 	var ex struct {
 		ID uint `json:"id"`
 	}
-	json.NewDecoder(resp.Body).Decode(&ex)
+	if err := json.NewDecoder(resp.Body).Decode(&ex); err != nil {
+		t.Fatalf("decode ex: %v", err)
+	}
 	resp.Body.Close()
 	if n := availabilityCount(t, host, ts, slug, day); n != 0 {
 		t.Fatalf("after whole-day block want 0 slots, got %d", n)
@@ -401,7 +413,9 @@ func TestAppointmentsHTTP_MyAppointmentsAndBookings(t *testing.T) {
 	resp = doJSON(t, booker, "GET", ts.URL+"/appointments/me", nil)
 	mustStatus(t, resp, http.StatusOK, "my appointments")
 	var mine []map[string]any
-	json.NewDecoder(resp.Body).Decode(&mine)
+	if err := json.NewDecoder(resp.Body).Decode(&mine); err != nil {
+		t.Fatalf("decode mine: %v", err)
+	}
 	resp.Body.Close()
 	if len(mine) != 1 {
 		t.Fatalf("booker /me want 1, got %d", len(mine))
@@ -413,7 +427,9 @@ func TestAppointmentsHTTP_MyAppointmentsAndBookings(t *testing.T) {
 	resp = doJSON(t, stranger, "GET", ts.URL+"/appointments/me", nil)
 	mustStatus(t, resp, http.StatusOK, "stranger /me")
 	var none []map[string]any
-	json.NewDecoder(resp.Body).Decode(&none)
+	if err := json.NewDecoder(resp.Body).Decode(&none); err != nil {
+		t.Fatalf("decode none: %v", err)
+	}
 	resp.Body.Close()
 	if len(none) != 0 {
 		t.Fatalf("stranger /me want 0, got %d", len(none))
@@ -423,7 +439,9 @@ func TestAppointmentsHTTP_MyAppointmentsAndBookings(t *testing.T) {
 	resp = doJSON(t, host, "GET", ts.URL+"/appointments/schedules/"+slug+"/bookings", nil)
 	mustStatus(t, resp, http.StatusOK, "host bookings")
 	var bookings []map[string]any
-	json.NewDecoder(resp.Body).Decode(&bookings)
+	if err := json.NewDecoder(resp.Body).Decode(&bookings); err != nil {
+		t.Fatalf("decode bookings: %v", err)
+	}
 	resp.Body.Close()
 	if len(bookings) != 1 {
 		t.Fatalf("host bookings want 1, got %d", len(bookings))
@@ -454,7 +472,9 @@ func TestAppointmentsHTTP_PaidCancelRefund(t *testing.T) {
 			ID uint `json:"id"`
 		} `json:"order"`
 	}
-	json.NewDecoder(resp.Body).Decode(&held)
+	if err := json.NewDecoder(resp.Body).Decode(&held); err != nil {
+		t.Fatalf("decode held: %v", err)
+	}
 	resp.Body.Close()
 
 	resp = capturePayment(t, ts, held.Order.ID, "evt-1")

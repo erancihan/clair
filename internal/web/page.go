@@ -6,8 +6,8 @@ import (
 	"github.com/erancihan/clair/internal/web/components"
 )
 
-// PageUser is the signed-in visitor the shell renders a user menu for. It is an
-// alias so callers assembling a Page never have to name internal/web/components.
+// PageUser is the signed-in visitor the shell renders the account menu for. It
+// is an alias so callers assembling a Page never have to name internal/web/components.
 type PageUser = components.SessionUser
 
 // Page is the per-request state of the site shell that Base renders around a
@@ -26,9 +26,8 @@ type Page struct {
 	// must be the token bound to the caller's session and already persisted to
 	// the session cookie, or the CSRF middleware will reject what JS sends.
 	CSRFToken string
-	// User is the signed-in visitor, or nil for an anonymous one — in which case
-	// the account slot in the header renders nothing. There is deliberately no
-	// public sign-in link.
+	// User is the signed-in visitor, or nil for an anonymous one. When User is
+	// nil the account slot in the header renders nothing.
 	User *PageUser
 }
 

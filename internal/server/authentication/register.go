@@ -51,6 +51,6 @@ func AuthRegister(ctx server_context.BackEndContext) http.HandlerFunc {
 		}
 
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("User registered successfully"))
+		_, _ = w.Write([]byte("User registered successfully"))
 	}
 }
