@@ -199,7 +199,7 @@ func TestWaitlist_OfferClaimCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	pay := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded", IdempotencyKey: "wl-1"}
+	pay := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded", AmountCents: order.TotalCents, IdempotencyKey: "wl-1"}
 	if err := booking.CaptureOrder(db, order.ID, pay, later); err != nil {
 		t.Fatalf("capture: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestPerBuyerLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hold 3: %v", err)
 	}
-	pay := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded", IdempotencyKey: "lim-1"}
+	pay := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded", AmountCents: order.TotalCents, IdempotencyKey: "lim-1"}
 	if err := booking.CaptureOrder(db, order.ID, pay, now); err != nil {
 		t.Fatalf("capture: %v", err)
 	}

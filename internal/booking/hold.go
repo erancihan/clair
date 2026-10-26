@@ -315,9 +315,27 @@ func ReapExpiredHolds(db *gorm.DB, now time.Time) (int, error) {
 		}
 		released++
 	}
-	if err := db.Model(&models.BookingOrder{}).
-		Where("status = 'pending' AND updated_at <= ?", now.Add(-30*time.Minute)).
-		Where("NOT EXISTS (SELECT 1 FROM booking_holds WHERE booking_holds.order_id = booking_orders.id AND booking_holds.status = 'active')").
+	stale := func() *gorm.DB {
+		return db.Model(&models.BookingOrder{}).
+			Where("status = 'pending' AND updated_at <= ?", now.Add(-30*time.Minute)).
+			Where("NOT EXISTS (SELECT 1 FROM booking_holds WHERE booking_holds.order_id = booking_orders.id AND booking_holds.status = 'active')")
+	}
+	charged := "EXISTS (SELECT 1 FROM booking_payments p WHERE p.order_id = booking_orders.id AND p.status = 'succeeded' AND p.kind IN ('capture', 'charge'))"
+
+	// A stale order that took money (its fulfilment failed after the payment
+	// was recorded) is cancelled, which refunds it. Expiring it would keep
+	// the money.
+	var paidIn []uint
+	if err := stale().Where(charged).Limit(500).Pluck("id", &paidIn).Error; err != nil {
+		errs = append(errs, fmt.Errorf("find stale charged orders: %w", err))
+	}
+	for _, id := range paidIn {
+		if err := CancelOrder(db, id, now); err != nil {
+			errs = append(errs, fmt.Errorf("refund stale order %d: %w", id, err))
+		}
+	}
+
+	if err := stale().Where("NOT "+charged).
 		Update("status", "expired").Error; err != nil {
 		errs = append(errs, fmt.Errorf("expire stale orders: %w", err))
 	}

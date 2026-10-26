@@ -29,6 +29,10 @@ func TestGuard(t *testing.T) {
 		{"postgres://clair:clair@localhost:5432/clair", "production", false, false},
 		{"postgres://u:p@db.example.net:5432/clair", "production", true, true},
 		{"not a dsn", "", false, false},
+		{"postgres://localhost/clair?host=db.example.net", "", false, false},
+		{"postgres://localhost,db.example.net/clair", "", false, false},
+		{"host=localhost,db.example.net dbname=clair", "", false, false},
+		{"postgres://[::1]:5432/clair", "", false, true},
 	}
 	for _, c := range cases {
 		err := simulator.Guard(c.dsn, c.env, c.allow)

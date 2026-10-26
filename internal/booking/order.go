@@ -25,6 +25,12 @@ var ErrCaptureRefunded = errors.New("booking: order could not be fulfilled; paym
 // it. When fulfilment fails for that reason, the order is cancelled and the
 // payment refunded, and ErrCaptureRefunded is returned.
 //
+// The money is checked against the order under the order lock, not when the
+// amount was read: an order that grew after it was priced (a GA top-up in
+// another tab) is not filled on the smaller payment, it is refunded. A payment
+// larger than what the items cost has the difference refunded, and so does a
+// second payment for an order that is already paid.
+//
 // Idempotent: a repeated payment (same IdempotencyKey) is not recorded twice,
 // and an order that is already paid is left alone.
 func CaptureOrder(db *gorm.DB, orderID uint, pay models.BookingPayment, now time.Time) error {
@@ -49,11 +55,25 @@ func CaptureOrder(db *gorm.DB, orderID uint, pay models.BookingPayment, now time
 			}
 			switch order.Status {
 			case "paid":
-				return nil
+				_, err := refundDueTx(tx, order, order.TotalCents)
+				return err
 			case "pending":
 			default:
 				unfulfillable = true
 				return nil
+			}
+
+			cost, err := reservedCost(tx, order.ID)
+			if err != nil {
+				return err
+			}
+			paidIn, err := netPaid(tx, order.ID)
+			if err != nil {
+				return err
+			}
+			if paidIn < cost {
+				unfulfillable = true
+				return errRollback
 			}
 
 			err = fulfilTx(tx, order, now)
@@ -61,6 +81,15 @@ func CaptureOrder(db *gorm.DB, orderID uint, pay models.BookingPayment, now time
 				unfulfillable = true
 				return errRollback
 			}
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&models.BookingOrder{}).Where("id = ?", order.ID).
+				Updates(map[string]any{"subtotal_cents": cost, "total_cents": cost}).Error; err != nil {
+				return err
+			}
+			order.TotalCents = cost
+			_, err = refundDueTx(tx, order, cost)
 			return err
 		})
 	})
@@ -95,9 +124,11 @@ func lockOrder(tx *gorm.DB, orderID uint) (models.BookingOrder, error) {
 // order paid. The caller holds the order lock.
 func fulfilTx(tx *gorm.DB, order models.BookingOrder, now time.Time) error {
 	// Only reserved items are paid for. An item dropped before checkout (its
-	// hold given back) is cancelled and is not part of the total.
+	// hold given back) is cancelled and is not part of the total. Items go in
+	// inventory order, the same order a cancel takes them in, so two
+	// transactions never lock the same rows in opposite orders.
 	var items []models.BookingOrderItem
-	if err := tx.Where("order_id = ? AND status = 'reserved'", order.ID).Find(&items).Error; err != nil {
+	if err := tx.Where("order_id = ? AND status = 'reserved'", order.ID).Order("inventory_id").Find(&items).Error; err != nil {
 		return err
 	}
 	for _, it := range items {
@@ -178,7 +209,7 @@ func cancelOrderTx(tx *gorm.DB, orderID uint, now time.Time) error {
 		}
 	}
 
-	refunded, err := refundDueTx(tx, order)
+	refunded, err := refundDueTx(tx, order, 0)
 	if err != nil {
 		return err
 	}
@@ -242,35 +273,67 @@ func RefundOrder(db *gorm.DB, orderID uint) (bool, error) {
 			if err != nil {
 				return err
 			}
-			refunded, err = refundDueTx(tx, order)
+			refunded, err = refundDueTx(tx, order, 0)
 			return err
 		})
 	})
 	return refunded, err
 }
 
-// refundDueTx writes a refund for the charged-but-not-refunded amount. The
-// caller holds the order lock, which is what makes the amount and the
-// idempotency key stable: the key names how much had been refunded before
-// this one, so a replay under the same state collides instead of refunding
-// twice.
-func refundDueTx(tx *gorm.DB, order models.BookingOrder) (bool, error) {
+// CancelOrderTx is CancelOrder inside a caller's transaction, for a domain
+// that settles an order as part of a larger change.
+func CancelOrderTx(tx *gorm.DB, orderID uint, now time.Time) error {
+	return cancelOrderTx(tx, orderID, now)
+}
+
+// reservedCost is what an order's reserved items cost, read under the
+// caller's order lock.
+func reservedCost(tx *gorm.DB, orderID uint) (int64, error) {
+	var cost int64
+	err := tx.Model(&models.BookingOrderItem{}).
+		Select("COALESCE(SUM(price_cents * qty), 0)").
+		Where("order_id = ? AND status = 'reserved'", orderID).Scan(&cost).Error
+	return cost, err
+}
+
+// netPaid is what an order has been charged, less what has gone back. Only a
+// capture or a charge took money; an authorization did not.
+func netPaid(tx *gorm.DB, orderID uint) (int64, error) {
 	var sums struct{ Charged, Refunded int64 }
 	if err := tx.Model(&models.BookingPayment{}).
-		Select(`COALESCE(SUM(CASE WHEN kind <> 'refund' THEN amount_cents END), 0) AS charged,
+		Select(`COALESCE(SUM(CASE WHEN kind IN ('capture', 'charge') THEN amount_cents END), 0) AS charged,
 			COALESCE(SUM(CASE WHEN kind = 'refund' THEN amount_cents END), 0) AS refunded`).
-		Where("order_id = ? AND status = 'succeeded'", order.ID).
+		Where("order_id = ? AND status = 'succeeded'", orderID).
 		Scan(&sums).Error; err != nil {
+		return 0, err
+	}
+	return sums.Charged - sums.Refunded, nil
+}
+
+// refundDueTx refunds whatever the order holds beyond keep: everything for a
+// cancel (keep 0), the overpayment for a paid order (keep its total). The
+// caller holds the order lock, which is what makes the amount and the
+// idempotency key stable: the key names how many payment rows the order had
+// before this refund, so a replay under the same state collides instead of
+// refunding twice.
+func refundDueTx(tx *gorm.DB, order models.BookingOrder, keep int64) (bool, error) {
+	held, err := netPaid(tx, order.ID)
+	if err != nil {
 		return false, err
 	}
-	due := sums.Charged - sums.Refunded
+	due := held - keep
 	if due <= 0 {
 		return false, nil
+	}
+	// Payment rows only ever accumulate, so their count names the state.
+	var rows int64
+	if err := tx.Model(&models.BookingPayment{}).Where("order_id = ?", order.ID).Count(&rows).Error; err != nil {
+		return false, err
 	}
 	refund := models.BookingPayment{
 		OrderID: order.ID, Provider: "mock", Kind: "refund", Status: "succeeded",
 		AmountCents: due, Currency: order.Currency,
-		IdempotencyKey: fmt.Sprintf("refund:order:%d:%d", order.ID, sums.Refunded),
+		IdempotencyKey: fmt.Sprintf("refund:order:%d:%d", order.ID, rows),
 	}
 	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&refund)
 	if res.Error != nil {

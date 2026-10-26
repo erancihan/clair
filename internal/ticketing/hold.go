@@ -8,7 +8,12 @@ import (
 	"github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+// errHoldGone means the buyer's existing hold stopped being a cart between
+// reading it and locking it: it was paid for, released or ran out.
+var errHoldGone = errors.New("ticketing: hold is no longer a cart")
 
 // Buyer identifies who is reserving and their contact details.
 type Buyer struct {
@@ -60,11 +65,15 @@ func HoldGA(db *gorm.DB, tier *models.BookingTicketTier, qty int, buyer Buyer, t
 			}
 			if existing != nil {
 				o, h, err := topUpGA(tx, tier, inv.ID, existing, qty, buyer, now, maxPerBuyer)
-				if err != nil {
+				if err == nil {
+					order, hold = o, h
+					return nil
+				}
+				if !errors.Is(err, errHoldGone) {
 					return err
 				}
-				order, hold = o, h
-				return nil
+				// The hold was paid for or released while this request was on its
+				// way. It is not the buyer's cart any more; open a fresh one.
 			}
 
 			if err := assertBuyerLimit(tx, tier.EventID, buyer.OwnerRef, qty, maxPerBuyer, now); err != nil {
@@ -104,6 +113,29 @@ func HoldGA(db *gorm.DB, tier *models.BookingTicketTier, qty int, buyer Buyer, t
 // Only the difference is charged against the per-buyer cap: the units already
 // held are already counted there.
 func topUpGA(tx *gorm.DB, tier *models.BookingTicketTier, invID uint, existing *models.BookingHold, qty int, buyer Buyer, now time.Time, maxPerBuyer int) (*models.BookingOrder, *models.BookingHold, error) {
+	// Order first, then hold: the order a capture or a cancel locks first. A
+	// capture that got there first has committed the hold, and growing it now
+	// would add units nobody paid for.
+	if existing.OrderID != nil {
+		var o models.BookingOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&o, *existing.OrderID).Error; err != nil {
+			return nil, nil, err
+		}
+		if o.Status != "pending" {
+			return nil, nil, errHoldGone
+		}
+	}
+	var current models.BookingHold
+	res := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND status = 'active' AND expires_at > ?", existing.ID, now).Limit(1).Find(&current)
+	if res.Error != nil {
+		return nil, nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, nil, errHoldGone
+	}
+	existing = &current
+
 	if delta := qty - existing.Qty; delta > 0 {
 		if err := assertBuyerLimit(tx, tier.EventID, buyer.OwnerRef, delta, maxPerBuyer, now); err != nil {
 			return nil, nil, err

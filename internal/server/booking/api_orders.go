@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erancihan/clair/internal/booking"
+	"github.com/erancihan/clair/internal/database/models"
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"github.com/erancihan/clair/internal/ticketing"
@@ -138,7 +139,13 @@ func cancelOrder(ctx server_context.BackEndContext, cache *snapshotCache[[]seatV
 		for _, eventID := range eventIDsForOrder(conn, id) {
 			cache.Bump(eventKey(eventID))
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"order_id": id, "status": "refunded"})
+		var order models.BookingOrder
+		if err := conn.Select("status").First(&order, id).Error; err != nil {
+			ctx.Logger.Error("read cancelled order", zap.Uint("order_id", id), zap.Error(err))
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"order_id": id, "status": order.Status})
 	}
 }
 

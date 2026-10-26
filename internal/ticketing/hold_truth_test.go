@@ -397,7 +397,7 @@ func TestClaimOfferRespectsBuyerCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("waiter's own hold: %v", err)
 	}
-	pay := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded", IdempotencyKey: "greedy-1"}
+	pay := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded", AmountCents: order.TotalCents, IdempotencyKey: "greedy-1"}
 	if err := booking.CaptureOrder(db, order.ID, pay, base); err != nil {
 		t.Fatalf("capture waiter's ticket: %v", err)
 	}

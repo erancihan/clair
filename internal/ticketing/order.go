@@ -174,13 +174,16 @@ func trimOrder(tx *gorm.DB, orderID uint, buyer Buyer, now time.Time) (bool, err
 	if buyer.UserID != nil {
 		updates["user_id"] = *buyer.UserID
 	}
-	if live == 0 {
-		updates["status"] = "cancelled"
-	}
 	if err := tx.Model(&models.BookingOrder{}).Where("id = ?", orderID).Updates(updates).Error; err != nil {
 		return false, err
 	}
-	return live > 0, nil
+	if live == 0 {
+		// Nothing left to sell. The order is cancelled through the booking
+		// service rather than by setting its status, because an earlier
+		// checkout may have taken money for it that has to go back.
+		return false, booking.CancelOrderTx(tx, orderID, now)
+	}
+	return true, nil
 }
 
 // CancelOrder cancels one of the caller's event orders: its tickets are

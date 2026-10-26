@@ -169,7 +169,7 @@ The theater's mock checkout pays for every live hold the buyer has on a showing.
 
 - A reserved item's hold is released, and the freed unit goes to the waitlist head.
 - A fulfilled item is revoked by its domain (`Revoker`: tickets become `refunded`, an appointment `cancelled`). Then `booked` is decremented under `booked >= qty` and the freed units go to the waitlist.
-- Whatever was charged and not yet refunded is refunded as one `mock` refund payment. Its idempotency key names the amount already refunded, so a replay collides instead of paying out twice.
+- Whatever was charged and not yet refunded is refunded as one `mock` refund payment. Its idempotency key names how many payment rows the order had, so a replay collides instead of paying out twice. A capture also refunds an overpayment, and a payment that does not cover the order (it grew after it was priced) is refunded whole rather than filled.
 
 `ticketing.CancelOrder` is the buyer's entry: it checks the order is theirs and that the showing has not started, then calls the booking service. `POST /events/orders/{id}/cancel` answers 404 for an order that is not the caller's, the same as for one that does not exist. `GET /events/orders` lists the caller's paid and refunded orders with their tickets.
 

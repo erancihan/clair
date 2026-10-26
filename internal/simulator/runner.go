@@ -3,6 +3,7 @@ package simulator
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net"
@@ -36,36 +37,53 @@ func Guard(dsn, appEnv string, allowProduction bool) error {
 	if strings.EqualFold(appEnv, "production") {
 		return fmt.Errorf("%w: APP_ENV is production", ErrProductionDSN)
 	}
-	host := dsnHost(dsn)
-	if host == "" {
+	hosts := dsnHosts(dsn)
+	if len(hosts) == 0 {
 		return fmt.Errorf("%w: cannot tell which host the DSN names", ErrProductionDSN)
 	}
-	if !localHosts[host] {
-		return fmt.Errorf("%w: host %q is not a local database", ErrProductionDSN, host)
+	for _, host := range hosts {
+		if !localHosts[host] {
+			return fmt.Errorf("%w: host %q is not a local database", ErrProductionDSN, host)
+		}
 	}
 	return nil
 }
 
-// dsnHost reads the host out of a URL DSN (postgres://...) or a key=value one
-// (host=... dbname=...).
-func dsnHost(dsn string) string {
+// dsnHosts reads every host a DSN can send the driver to: the URL authority
+// (which may list several, comma separated) and a host query parameter, which
+// overrides it, for a URL DSN; the host key for a key=value one. Every one of
+// them has to be local for the guard to pass.
+func dsnHosts(dsn string) []string {
+	var raw []string
 	if strings.Contains(dsn, "://") {
 		u, err := url.Parse(dsn)
 		if err != nil {
-			return ""
+			return nil
 		}
-		return strings.ToLower(u.Hostname())
-	}
-	for _, field := range strings.Fields(dsn) {
-		if k, v, ok := strings.Cut(field, "="); ok && k == "host" {
-			v = strings.Trim(v, `'"`)
-			if h, _, err := net.SplitHostPort(v); err == nil {
-				v = h
+		raw = append(raw, strings.Split(u.Host, ",")...)
+		for _, h := range u.Query()["host"] {
+			raw = append(raw, strings.Split(h, ",")...)
+		}
+	} else {
+		for _, field := range strings.Fields(dsn) {
+			if k, v, ok := strings.Cut(field, "="); ok && k == "host" {
+				raw = append(raw, strings.Split(strings.Trim(v, `'"`), ",")...)
 			}
-			return strings.ToLower(v)
 		}
 	}
-	return ""
+
+	var out []string
+	for _, h := range raw {
+		h = strings.TrimSpace(h)
+		if host, _, err := net.SplitHostPort(h); err == nil {
+			h = host
+		}
+		h = strings.ToLower(strings.Trim(h, "[]"))
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // lockKey is the advisory lock that makes the simulator a single runner across
@@ -98,9 +116,10 @@ func (r *Runner) Tick(ctx context.Context, now time.Time) (rep Report, ran bool,
 		}
 	}
 	if err := r.conn.PingContext(ctx); err != nil {
-		// The connection, and with it the lock, is gone. Try again next tick.
-		_ = r.conn.Close()
-		r.conn = nil
+		// The lock's connection is unusable. It is discarded rather than handed
+		// back to the pool: a connection that still holds the lock must never
+		// end up serving somebody else. Try again next tick.
+		r.discard()
 		return rep, false, fmt.Errorf("simulator lock connection lost: %w", err)
 	}
 	rep, err = r.sim.Tick(ctx, now)
@@ -135,9 +154,22 @@ func (r *Runner) Close() error {
 	if r.conn == nil {
 		return nil
 	}
-	_, err := r.conn.ExecContext(context.Background(),
-		`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey)
-	cerr := r.conn.Close()
+	if _, err := r.conn.ExecContext(context.Background(),
+		`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey); err != nil {
+		// Unlocking failed, so the session may still hold the lock. Closing
+		// the session is what releases it for certain.
+		r.discard()
+		return err
+	}
+	err := r.conn.Close()
 	r.conn = nil
-	return errors.Join(err, cerr)
+	return err
+}
+
+// discard closes the lock's connection for good instead of returning it to
+// the pool. Ending the session is what makes Postgres drop the lock.
+func (r *Runner) discard() {
+	_ = r.conn.Raw(func(any) error { return driver.ErrBadConn })
+	_ = r.conn.Close()
+	r.conn = nil
 }

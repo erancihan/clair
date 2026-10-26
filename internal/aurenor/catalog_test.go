@@ -59,6 +59,17 @@ func TestEventSlugsAreUnique(t *testing.T) {
 	}
 }
 
+// TestBoardFitsOneSummaryRequest: a theater board asks for every showing in
+// its window in one request, and the summary endpoint takes at most 50 slugs.
+func TestBoardFitsOneSummaryRequest(t *testing.T) {
+	now := localMidnight(t, 2026, 6, 1)
+	for _, theater := range TheaterVenueSlugs() {
+		if n := len(TheaterShowings(theater, now)); n == 0 || n > 50 {
+			t.Errorf("theater %q lists %d showings, want 1..50", theater, n)
+		}
+	}
+}
+
 // TestWindowRolls is O11: a window computed a week later still holds a full
 // fortnight of future showings, and the days that overlap keep their slugs.
 func TestWindowRolls(t *testing.T) {

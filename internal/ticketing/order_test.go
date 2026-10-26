@@ -224,3 +224,109 @@ func TestCheckoutCoversEveryHoldAndSkipsReleased(t *testing.T) {
 		t.Errorf("second checkout: got %v, want ErrNothingToPay", err)
 	}
 }
+
+// TestCaptureRefusesAnOrderThatGrewAfterItWasPriced: a GA top-up in another
+// tab lands between reading the order's total and capturing it. The smaller
+// payment does not buy the bigger order; it is refunded whole.
+func TestCaptureRefusesAnOrderThatGrewAfterItWasPriced(t *testing.T) {
+	db := ticketDB(t)
+	tier := gaTier(t, db, 10)
+	now := time.Now()
+	b := ticketing.Buyer{OwnerRef: "guest:tabs"}
+
+	order, _, err := ticketing.HoldGA(db, tier, 2, b, time.Hour, now, 0)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	priced := order.TotalCents
+	if _, _, err := ticketing.HoldGA(db, tier, 4, b, time.Hour, now, 0); err != nil {
+		t.Fatalf("top up: %v", err)
+	}
+
+	pay := models.BookingPayment{Provider: "mock", Kind: "charge", Status: "succeeded",
+		AmountCents: priced, Currency: order.Currency, IdempotencyKey: "tabs-1"}
+	if err := booking.CaptureOrder(db, order.ID, pay, now); !errors.Is(err, booking.ErrCaptureRefunded) {
+		t.Fatalf("underpaid capture: got %v, want ErrCaptureRefunded", err)
+	}
+	var tickets int64
+	db.Model(&models.BookingTicket{}).Where("tier_id = ?", tier.ID).Count(&tickets)
+	if tickets != 0 {
+		t.Errorf("%d tickets issued on an underpaid order", tickets)
+	}
+	if c, r := paymentsFor(t, db, order.ID); c != priced || r != priced {
+		t.Errorf("charged %d refunded %d, want both %d", c, r, priced)
+	}
+	inv, _ := booking.InventoryByOwner(db, booking.TierOwner(tier.ID))
+	if inv.Held != 0 || inv.Booked != 0 {
+		t.Errorf("inventory held=%d booked=%d, want 0/0", inv.Held, inv.Booked)
+	}
+}
+
+// TestCaptureRefundsWhatTheOrderDoesNotCost: an overpayment, and a second
+// payment for an order that is already paid, both go back.
+func TestCaptureRefundsWhatTheOrderDoesNotCost(t *testing.T) {
+	db := ticketDB(t)
+	tier := gaTier(t, db, 10)
+	now := time.Now()
+
+	order, _, err := ticketing.HoldGA(db, tier, 1, ticketing.Buyer{OwnerRef: "guest:over"}, time.Hour, now, 0)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	over := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded",
+		AmountCents: order.TotalCents + 500, Currency: order.Currency, IdempotencyKey: "over-1"}
+	if err := booking.CaptureOrder(db, order.ID, over, now); err != nil {
+		t.Fatalf("overpaid capture: %v", err)
+	}
+	if s := orderStatus(t, db, order.ID); s != "paid" {
+		t.Fatalf("status %q, want paid", s)
+	}
+	if c, r := paymentsFor(t, db, order.ID); c-r != order.TotalCents {
+		t.Errorf("kept %d, want %d", c-r, order.TotalCents)
+	}
+
+	again := models.BookingPayment{Provider: "mock", Kind: "capture", Status: "succeeded",
+		AmountCents: order.TotalCents, Currency: order.Currency, IdempotencyKey: "over-2"}
+	if err := booking.CaptureOrder(db, order.ID, again, now); err != nil {
+		t.Fatalf("second payment: %v", err)
+	}
+	if c, r := paymentsFor(t, db, order.ID); c-r != order.TotalCents {
+		t.Errorf("after a second payment kept %d, want %d", c-r, order.TotalCents)
+	}
+}
+
+// TestReaperRefundsAStaleOrderThatTookMoney: an order whose payment was
+// recorded but never fulfilled, and whose holds have gone, is refunded by the
+// reaper rather than expired with the money kept.
+func TestReaperRefundsAStaleOrderThatTookMoney(t *testing.T) {
+	db := ticketDB(t)
+	tier := gaTier(t, db, 10)
+	now := time.Now()
+
+	order, hold, err := ticketing.HoldGA(db, tier, 1, ticketing.Buyer{OwnerRef: "guest:stale"}, time.Minute, now, 0)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	// The payment row made it; fulfilment did not.
+	if err := db.Create(&models.BookingPayment{OrderID: order.ID, Provider: "mock", Kind: "charge",
+		Status: "succeeded", AmountCents: order.TotalCents, IdempotencyKey: "stale-1"}).Error; err != nil {
+		t.Fatalf("payment: %v", err)
+	}
+	_ = hold
+
+	later := now.Add(time.Hour)
+	if _, err := booking.ReapExpiredHolds(db, later); err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	// The order's updated_at moved when its hold was released; the next sweep
+	// past the 30-minute grace is what settles it.
+	if _, err := booking.ReapExpiredHolds(db, later.Add(time.Hour)); err != nil {
+		t.Fatalf("second reap: %v", err)
+	}
+	if s := orderStatus(t, db, order.ID); s != "refunded" {
+		t.Fatalf("stale charged order is %q, want refunded", s)
+	}
+	if c, r := paymentsFor(t, db, order.ID); r != c {
+		t.Errorf("charged %d refunded %d", c, r)
+	}
+}

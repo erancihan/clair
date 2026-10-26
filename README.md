@@ -32,8 +32,10 @@ subcommands run without a build:
   ```
 
 - The scheduler — background jobs that depend on time passing rather than on a
-  request arriving. Today that is the hold reaper, which releases reservations
-  nobody paid for:
+  request arriving: the hold reaper (every minute), which releases reservations
+  nobody paid for, and the theater calendar (hourly), which keeps 14 days of
+  showings created. Retention and the booking simulator also run here, each
+  only when its setting turns it on:
   ```bash
   go run cmd/clair/main.go scheduler
   ```
@@ -94,6 +96,11 @@ docker compose -f docker-compose.dev.yaml --profile seed up seed   # once, to fi
 | `RATE_LIMIT_STREAMS_PER_IP` | yes | Open event streams per client address. Defaults to 12. |
 | `TRUST_PROXY_HEADERS` | yes | `true` keys the limits on the first `X-Forwarded-For` hop. Set it only behind a proxy you control. Defaults to `false`. |
 | `PUBLIC_PATH` | yes | Directory served at `/public/`. Defaults to `internal/web/public`. |
+| `RETENTION_ENABLED` | yes | `true` has the scheduler delete booking history once the showing or slot is `RETENTION_DAYS` in the past. Off by default. |
+| `RETENTION_DAYS` | yes | Days of booking history to keep. Defaults to 90. |
+| `SIM_ENABLED` | yes | `true` has the scheduler simulate bookings on the Aurenor showings and slots. Off by default. |
+| `SIM_ALLOW_PRODUCTION` | yes | `true` lets the simulator write to a database that looks like production. Defaults to `false`. |
+| `SIM_TARGET_OCCUPANCY` | yes | Share of each showing or slot the simulator fills by its start, 0 to 1. Defaults to 0.6. |
 | `TEST_DATABASE_URL` | yes | Database the test suite uses when set; otherwise `DATABASE_URL`. |
 
 ## Testing
