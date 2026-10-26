@@ -20,8 +20,8 @@ type Report struct {
 }
 
 // Seed writes the Aurenor catalog into db idempotently: a host user, 16 free
-// appointment schedules with their weekly rules, and the theater events with
-// full seat/GA inventory. Re-running changes no row counts. It never materializes
+// appointment schedules with their weekly rules, and the theater showings of the
+// next WindowDays days with full seat/GA inventory. Re-running changes no row counts. It never materializes
 // appointment slots — those are created lazily on first booking.
 func Seed(db *gorm.DB, now time.Time, hostEmail string) (Report, error) {
 	var rep Report
@@ -74,15 +74,45 @@ func Seed(db *gorm.DB, now time.Time, hostEmail string) (Report, error) {
 		}
 	}
 
-	// Events — CreateEvent is not idempotent (plain insert, unique slug), so
-	// pre-check by slug and skip existing ones.
+	created, skipped, err := seedEvents(db, host.ID, now)
+	rep.EventsCreated, rep.EventsSkipped = created, skipped
+	if err != nil {
+		return rep, err
+	}
+
+	return rep, nil
+}
+
+// ExtendCalendar creates every showing in the window that does not exist yet.
+// The scheduler runs it so the theater board never runs dry: without it the
+// seeded showings all lie in the past a fortnight after a seed.
+//
+// The new showings belong to whoever owns the seeded schedules. A database that
+// was never seeded has no such owner, and nothing is created.
+func ExtendCalendar(db *gorm.DB, now time.Time) (int, error) {
+	var sched models.BookingSchedule
+	res := db.Where("slug = ?", AllSchedules()[0].Slug).Limit(1).Find(&sched)
+	if res.Error != nil {
+		return 0, fmt.Errorf("find calendar owner: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return 0, nil
+	}
+	created, _, err := seedEvents(db, sched.OwnerID, now)
+	return created, err
+}
+
+// seedEvents creates the window's showings for ownerID. CreateEvent is not
+// idempotent (plain insert, unique slug), so each slug is checked first and
+// an existing one is skipped.
+func seedEvents(db *gorm.DB, ownerID uint, now time.Time) (created, skipped int, err error) {
 	for _, def := range AllEvents(now) {
 		var n int64
 		if err := db.Model(&models.BookingEvent{}).Where("slug = ?", def.Slug).Count(&n).Error; err != nil {
-			return rep, fmt.Errorf("check event %s: %w", def.Slug, err)
+			return created, skipped, fmt.Errorf("check event %s: %w", def.Slug, err)
 		}
 		if n > 0 {
-			rep.EventsSkipped++
+			skipped++
 			continue
 		}
 
@@ -103,17 +133,16 @@ func Seed(db *gorm.DB, now time.Time, hostEmail string) (Report, error) {
 				}
 			}
 		default:
-			return rep, fmt.Errorf("event %s: invalid tier kind %q", def.Slug, def.Tier.Kind)
+			return created, skipped, fmt.Errorf("event %s: invalid tier kind %q", def.Slug, def.Tier.Kind)
 		}
 
 		if _, err := ticketing.CreateEvent(db, ticketing.EventInput{
-			OwnerID: host.ID, Slug: def.Slug, Name: def.Name, StartAt: startAt(now, def),
+			OwnerID: ownerID, Slug: def.Slug, Name: def.Name, StartAt: def.StartAt,
 			Timezone: TZ, MaxPerBuyer: 6, Tiers: []ticketing.TierInput{tier},
 		}); err != nil {
-			return rep, fmt.Errorf("create event %s: %w", def.Slug, err)
+			return created, skipped, fmt.Errorf("create event %s: %w", def.Slug, err)
 		}
-		rep.EventsCreated++
+		created++
 	}
-
-	return rep, nil
+	return created, skipped, nil
 }

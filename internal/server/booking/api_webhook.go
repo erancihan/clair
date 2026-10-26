@@ -133,7 +133,15 @@ func paymentWebhook(ctx server_context.BackEndContext, cache *snapshotCache[[]se
 			IdempotencyKey: event.DeliveryID,
 		}
 
-		if err := booking.CaptureOrder(conn, event.OrderID, payment, time.Now()); err != nil {
+		status := "captured"
+		err = booking.CaptureOrder(conn, event.OrderID, payment, time.Now())
+		if isRefundedCapture(err) {
+			// The money arrived after the order could no longer be filled. It is
+			// recorded and refunded, which is a final answer: a retry would get
+			// the same one, so the provider is told it was received.
+			status, err = "refunded", nil
+		}
+		if err != nil {
 			ctx.Logger.Error("capture order from payment webhook",
 				zap.Uint("order_id", event.OrderID), zap.Error(err))
 			http.Error(w, "server error", http.StatusInternalServerError)
@@ -147,7 +155,7 @@ func paymentWebhook(ctx server_context.BackEndContext, cache *snapshotCache[[]se
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"order_id": event.OrderID, "status": "captured",
+			"order_id": event.OrderID, "status": status,
 		})
 	}
 }

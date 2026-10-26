@@ -1,9 +1,8 @@
 package pages
 
-// theaterNotice is the caveat the theater pages carry: seats really are held
-// against real inventory, but capture only happens through the signed payment
-// webhook, which no browser can call.
-const theaterNotice = "Preview · seats hold for real, checkout is not wired yet"
+// theaterNotice is the caveat the theater pages carry: seats, holds and tickets
+// are real rows, but the payment behind checkout is simulated.
+const theaterNotice = "Simulation · seats and tickets are real, payment is mocked"
 
 // AurenorTheaters lists the nation's movie theaters (the seat-reservation
 // system). The collection scheme lets more than one exist.

@@ -12,6 +12,14 @@ type Fulfiller interface {
 	Fulfill(tx *gorm.DB, order models.BookingOrder, item models.BookingOrderItem, inv models.BookingInventory) (uint, error)
 }
 
+// Revoker undoes a fulfilment when a paid order is cancelled: a ticket is
+// refunded, an appointment cancelled. It runs inside the cancel transaction,
+// before the booked units are released. A fulfiller that cannot be revoked makes
+// its orders impossible to cancel, which CancelOrder reports as an error.
+type Revoker interface {
+	Revoke(tx *gorm.DB, item models.BookingOrderItem, inv models.BookingInventory) error
+}
+
 var fulfillers = map[string]Fulfiller{} // key: owner kind "slot"|"seat"|"tier"
 
 // RegisterFulfiller registers the fulfiller for an inventory owner kind. Domains

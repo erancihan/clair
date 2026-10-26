@@ -15,7 +15,7 @@ flowchart TB
     Svc["booking (the service)<br/>inventory counters, holds, orders, payments, waitlist, fulfiller registry"]
     PG[("Postgres<br/>booking_* tables + NOTIFY triggers")]
     Hub["live.Hub<br/>LISTEN booking_inventory"]
-    Sched["clair scheduler<br/>reaper, every minute"]
+    Sched["clair scheduler<br/>reaper every minute, calendar hourly,<br/>retention daily and simulator (both opt-in)"]
 
     Pages -->|JSON + SSE| Routes
     Routes --> Appt
@@ -118,7 +118,7 @@ General admission (`POST /events/{slug}/tiers/{tierID}/hold`) is the same shape 
 
 ## Payment capture
 
-The only route that turns money into a ticket or a confirmed paid appointment. The provider calls it. There is no session and no CSRF token, so the HMAC over the raw body is the whole of the authentication.
+Two callers turn money into a ticket or a confirmed paid appointment. A provider calls the webhook; there is no session and no CSRF token, so the HMAC over the raw body is the whole of its authentication. The theater checkout (`POST /events/{slug}/checkout`) charges the mock provider in-process and goes through the same `CaptureOrder`.
 
 ```mermaid
 sequenceDiagram
@@ -135,13 +135,14 @@ sequenceDiagram
     Hook->>PG: load order by id (404 if missing)
     Note over Hook,PG: amount and currency come from the order,<br/>never from the delivery
     Hook->>Svc: CaptureOrder(orderID, payment{idempotency_key = delivery_id}, now)
-    Svc->>PG: BEGIN
-    Svc->>PG: INSERT payment ON CONFLICT (idempotency_key) DO NOTHING
-    alt duplicate delivery
+    Svc->>PG: INSERT payment ON CONFLICT (idempotency_key) DO NOTHING (own transaction)
+    Note over Svc,PG: the payment is a fact whatever happens to the seats,<br/>so it is committed before fulfilment starts
+    Svc->>PG: BEGIN, SELECT order FOR UPDATE
+    alt order already paid (a duplicate delivery)
         Svc-->>Hook: nil
-        Hook-->>Prov: 200 (so the provider stops retrying)
-    else first delivery
-        loop every order item
+        Hook-->>Prov: 200 {captured}
+    else order pending
+        loop every reserved item
             Svc->>PG: SELECT hold FOR UPDATE (CommitTx)
             Svc->>PG: UPDATE held = held - qty, booked = booked + qty<br/>WHERE held >= qty AND booked + blocked + qty <= capacity
             Svc->>PG: hold status = committed
@@ -152,10 +153,25 @@ sequenceDiagram
         Svc->>PG: order status = paid, COMMIT
         Hook->>Hook: bump the seat snapshot cache for the event
         Hook-->>Prov: 200 {captured}
+    else a hold lapsed, or the order was cancelled or expired
+        Svc->>PG: ROLLBACK the fulfilment
+        Svc->>Svc: CancelOrder (release holds, refund the payment)
+        Svc-->>Hook: ErrCaptureRefunded
+        Hook-->>Prov: 200 {refunded} (a retry would get the same answer)
     end
 ```
 
-Known gap (roadmap B2): a hold that lapsed between checkout and the webhook makes `CommitTx` return `ErrHoldExpired`, the whole transaction rolls back including the payment row, and the provider gets a 500. There is no void or refund path for a ticket order yet.
+## Checkout and cancel
+
+The theater's mock checkout pays for every live hold the buyer has on a showing. A cart is built over several hold requests and each opens its own order, so `ticketing.Checkout` takes the buyer's lock, drops any item whose hold was given back or ran out, recomputes each order's total, and then captures each order with a `mock` charge. A hold that lapses between those two steps makes its order refunded, and the buyer is told nothing was charged for it.
+
+`booking.CancelOrder(db, orderID, now)` undoes an order at any stage, in one transaction under the order's row lock:
+
+- A reserved item's hold is released, and the freed unit goes to the waitlist head.
+- A fulfilled item is revoked by its domain (`Revoker`: tickets become `refunded`, an appointment `cancelled`). Then `booked` is decremented under `booked >= qty` and the freed units go to the waitlist.
+- Whatever was charged and not yet refunded is refunded as one `mock` refund payment. Its idempotency key names how many payment rows the order had, so a replay collides instead of paying out twice. A capture also refunds an overpayment, and a payment that does not cover the order (it grew after it was priced) is refunded whole rather than filled.
+
+`ticketing.CancelOrder` is the buyer's entry: it checks the order is theirs and that the showing has not started, then calls the booking service. `POST /events/orders/{id}/cancel` answers 404 for an order that is not the caller's, the same as for one that does not exist. `GET /events/orders` lists the caller's paid and refunded orders with their tickets.
 
 ## Reaper and waitlist
 
@@ -196,6 +212,18 @@ sequenceDiagram
 
 Three places know what "expired" means, and they agree by construction: the reaper's poll, the reclaim CTE at the top of `HoldUnitsTx`, and the `expires_at > now` predicate in `activeHold`, `assertBuyerLimit` and `CommitTx`. Even before the reaper sweeps it, a lapsed hold is unusable.
 
+## Retention
+
+History is deleted by business time, never by when a row was written: a ticket bought a year ahead is not history until the showing has happened. `booking.PurgeBefore(db, cutoff, now)` is the whole of it, and `PurgeOldBookingData(db, now)` calls it with a 90-day cutoff.
+
+| Goes | Stays |
+|---|---|
+| Orders, order items, payments, tickets | Schedules, availability rules, exceptions |
+| Appointments, holds, waitlist entries | Events, tiers, seats |
+| Past slots and their inventory rows (both are created on first booking) | The inventory rows of tiers and seats |
+
+A slot or showing with a pending order, or a hold that is still live, is skipped whole: a payment for it may still be in flight. The reaper expires such an order after 30 minutes without an active hold, and the next run takes it. Slots go 500 per transaction and showings one per transaction, at most 200 batches of each per run, so a first run over a long history spreads over several nights. `clair scheduler` runs the purge daily at 03:30 UTC only when `RETENTION_ENABLED=true`, keeping `RETENTION_DAYS` (default 90).
+
 ## Live updates
 
 A screen opens one event stream and subscribes to only what it shows. The change signal comes from the database, so every writer is covered.
@@ -225,6 +253,18 @@ sequenceDiagram
 
 Schedules work the same way on `GET /appointments/schedules/{slug}/availability/stream`, with topic `schedule:<id>`. Rule and exception changes announce too, because availability is computed, not stored.
 
+## Simulator
+
+`internal/simulator` books the demo through the same calls a visitor's request reaches: `ticketing.HoldGA` or `HoldSeatGroup` then `Checkout` for a showing, and `appointments.Book` for a slot. Every row it writes is one the booking service itself allowed. Each tick, run every minute by `clair scheduler` when `SIM_ENABLED=true`:
+
+- **Fill.** Every showing and free schedule in a 14-day horizon is moved toward `target × sqrt(1 − time-to-start / horizon)`. At most three units go to one showing per tick, and a seated group sits side by side in one row.
+- **Churn.** With a small chance per showing and per schedule, one of the simulator's own paid orders is cancelled through `ticketing.CancelOrder`, or one of its appointments through `CancelByToken`. The freed units reach the waitlist like any other cancel.
+- **Abandon.** With a small chance per showing, a hold is placed and never paid. The reaper releases it.
+
+Its buyers are `sim:<n>` owner references, one per purchase, so the per-buyer cap never decides how full a showing gets. Appointments have no owner reference, so the simulator writes the same `sim:` prefix into the guest email.
+
+Two guards stand in front of it. `simulator.Guard` refuses `APP_ENV=production` and any `DATABASE_URL` host that is not localhost or a compose service (`postgres`, `db`), unless `SIM_ALLOW_PRODUCTION=true`. It runs before the scheduler connects, and a refusal makes the scheduler exit non-zero. A session-level advisory lock, held on a connection taken out of the pool, makes one scheduler the runner and has any other stand by.
+
 ## Open questions about the design
 
 Points worth a decision rather than defects. Each names where the code stands today.
@@ -236,5 +276,4 @@ Points worth a decision rather than defects. Each names where the code stands to
 5. **The per-buyer cap and the buyer lock live in `ticketing` only.** `appointments` has no cap, so one guest can book every slot of a schedule. A3 answered this with rate limiting, not with a domain rule.
 6. **`topUpGA` repeats the guarded `held` increment** instead of calling a service primitive, so the capacity predicate is written in two packages.
 7. **Inventory ownership is three nullable foreign keys.** `OwnerRef` keeps "exactly one" in one place in Go. The database does not enforce it.
-8. **One payment provider, no refund for tickets.** The allowlist holds `mock`. Roadmap items K6 and K7 cover void and refund.
-9. **`CancelByToken` reads `time.Now()` and skips the write-retry wrapper**, unlike every other entry point (roadmap K20).
+8. **One payment provider, and refunds are mock rows.** The allowlist holds `mock`, and a refund is a payment row with kind `refund`; nothing calls a provider back. A real provider needs its refund call made from `refundDueTx`. A second, distinct payment for an order that is already paid is recorded and not refunded.

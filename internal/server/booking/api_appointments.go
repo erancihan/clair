@@ -159,7 +159,7 @@ func cancelByToken(ctx server_context.BackEndContext, cache *snapshotCache[[]app
 		var appointment models.BookingAppointment
 		conn.Where("cancel_token = ?", token).Limit(1).Find(&appointment)
 
-		if err := appt.CancelByToken(conn, token); err != nil {
+		if err := appt.CancelByToken(conn, token, time.Now()); err != nil {
 			ctx.Logger.Error("cancel appointment", zap.Error(err))
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return

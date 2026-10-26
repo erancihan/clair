@@ -14,10 +14,10 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 
 ## Phase B. Complete the loop
 
-- B1. Rolling calendar. Findings O11, O12, O13. Date-bearing event slugs, a scheduler job that keeps a 14-day window of showings, catalog as the single source for service names and blurbs.
-- B2. Theater checkout and cancel. Findings K6, K7. A mock-payment checkout that captures a hold into a paid order with issued tickets, `CancelOrder` and `RefundOrder` in the booking service, a my-tickets panel. Prerequisite for simulator churn.
-- B3. Retention. `PurgeOldBookingData(db, now)` deleting by business time (`event.start_at`, `slot.end_at`), status-guarded on money rows, batched, with supporting indexes. A gated daily scheduler job. Never touches seeded schedules, rules, tiers or seats.
-- B4. Simulator. Findings K20, K22. Package `internal/simulator`. Demand-curve fill through in-process domain calls that converges toward a target occupancy per showing or slot, with churn from B2's cancel path and abandoned holds. `sim:` owner-ref namespace, production DSN guard, advisory-lock single runner, wired into `clair scheduler` behind `SIM_ENABLED`.
+- B1. Rolling calendar. *(done 2026-10-26)* Event slugs carry the date (`grand-dune-part-two-20261027-1900`). Each film time plays once a week, and `aurenor.ExtendCalendar`, run hourly by `clair scheduler`, keeps a 14-day window of showings created. The catalog is the single source for service names and blurbs. The catalog test asserts 16 schedules, 84 rules and 17 weekly showtimes exactly.
+- B2. Theater checkout and cancel. *(done 2026-10-26)* `CaptureOrder` records the payment in its own transaction and refunds an order it cannot fill. `CancelOrder` and `RefundOrder` in the booking service release units to the waitlist and refund. A mock-payment checkout (`POST /events/{slug}/checkout`) pays every live hold on a showing and issues tickets. A my-tickets panel on the theater and showing pages lists orders and cancels them until the showing starts.
+- B3. Retention. *(done 2026-10-26)* `booking.PurgeOldBookingData(db, now)` deletes orders, items, payments, tickets, appointments, holds, waitlist entries and past slots by business time (`event.start_at`, `slot.end_at`), 90 days back by default. Anything with a pending order or a live hold is skipped until it settles. Slots go in batches of 500, events one per transaction, on new `start_at` and `end_at` indexes. `clair scheduler` runs it daily at 03:30 UTC only when `RETENTION_ENABLED=true`. Schedules, rules, events, tiers and seats are never deleted.
+- B4. Simulator. *(done 2026-10-26)* Package `internal/simulator`. Each minute it moves every showing and slot in a 14-day horizon toward a target occupancy (60% by default) that rises with the square root of how close the start is. It books through the same domain calls a visitor reaches, cancels a few of its own orders and appointments through B2's cancel path, and leaves a few holds unpaid for the reaper. Its buyers are `sim:` owner references. A guard refuses `APP_ENV=production` or a non-local database host unless `SIM_ALLOW_PRODUCTION=true`. A session advisory lock keeps one runner across scheduler processes. It runs in `clair scheduler` behind `SIM_ENABLED=true`. K20: `CancelByToken` takes `now` and retries. K22 was already closed: both availability paths call `appointments.OpenSlotsFor`.
 
 ## Phase C. Polish
 
@@ -30,10 +30,6 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 
 | Id | Where | Kind | Finding | Fix | Step |
 |---|---|---|---|---|---|
-| K6 | `booking/hold.go` `CaptureOrder` | gap | A hold that lapses between checkout and the webhook makes `CaptureOrder` fail and roll back the payment row too. No void or refund path exists outside `CancelByToken`. | Record the payment in its own transaction. Add `RefundOrder` to the service. | B2 |
-| K7 | `booking/inventory.go` `Cancel` | gap | `booking.Cancel` has one caller, in appointments. Nothing decrements `booked` for a tier or seat inventory, so a captured sale is irreversible. | Add `CancelOrder(db, orderID, now)` that releases each item's units and drives the refund. | B2 |
-| K20 | `appointments/book.go` `CancelByToken` | smell | Calls `time.Now()` internally. Every other entry point takes `now`. | Add the parameter. | B4 |
-| K22 | `server/booking/api_availability.go` | smell | The "load rules, exceptions and booked counts" preamble is duplicated between `availability()` and `availabilityViews()`. | Move it into `appointments.OpenSlotsFor`. | B4 |
 | W7 | `pages/aurenor_showing_script.templ` | bug | `seatLimit` returns `Math.max(1, ...)`, so a sold-out GA showing renders an enabled Hold button that always answers 409. | Branch on `remaining === 0`. Add a sold-out panel. | C1 |
 | W8 | `pages/aurenor_service_script.templ`, `aurenor_theater_live.templ` | ux | When the chosen day empties, `apply()` silently jumps to `days[0]`. | Set the live-region notice. | C1 |
 | W9 | `pages/aurenor_showing.templ` | a11y | `role="gridcell"` on the `<button>` discards the button role and makes `aria-pressed` meaningless. | Wrap: `<div role="gridcell"><button aria-pressed>`. | C1 |
@@ -47,9 +43,6 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 | W17 | `pages/aurenor_theater_live.templ` | dead, ux | The "No showings on <day>" panel and `nextDayWithShowings` are unreachable. An empty board renders as a red `role="alert"`. | Delete the dead branch. Add a neutral empty state. | C1 |
 | W18 | `components/header.templ` | dead, bug | `NavItem`'s active branch is unreachable. `max-w-9xl` and `lg:max-w-12xl` do not exist in Tailwind. | Delete. Compute active from path. Use `max-w-7xl`. | C1 |
 | W20 | `routes/booking.go`, `components/nav.go` | ux | `/aurenor` answers 404 and no nav entry exists. A deep-linked visitor has no route back. | Mount an `/aurenor` index that lists the four systems. | C1 |
-| O11 | `internal/aurenor/seed.go`, `catalog.go` | bug | Event slugs are `theater-film-HHMM` with no date, and `startAt` is `now + DayOffset` with `DayOffset` in 1 to 7. Re-runs skip all 17 by slug. Eight days after a seed, 0 of 17 showings are in the future. | Date-bearing slugs plus a scheduled job that keeps an N-day window. | B1 |
-| O12 | `internal/aurenor/catalog.go`, `pages/aurenor_helpers.go` | smell | The twelve service names are typed twice: catalog bare, page with blurbs. | Move blurbs into the catalog. Assert both directions. | B1 |
-| O13 | `internal/aurenor/catalog_test.go` | gap | Only "16 schedules" is asserted. The 84 rules and 17 events are checked by `len != 0`. | Assert all three. | B1 |
 
 ## Decisions that stand
 

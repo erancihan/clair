@@ -70,6 +70,23 @@ func (ticketFulfiller) Fulfill(tx *gorm.DB, order models.BookingOrder, item mode
 	return 0, fmt.Errorf("ticketing: inventory %d has no seat/tier owner", inv.ID)
 }
 
+// Revoke refunds the item's tickets when its order is cancelled. A ticket
+// already used at the door is not refundable, and refusing it here rolls the
+// whole cancel back.
+func (ticketFulfiller) Revoke(tx *gorm.DB, item models.BookingOrderItem, inv models.BookingInventory) error {
+	var used int64
+	if err := tx.Model(&models.BookingTicket{}).
+		Where("order_item_id = ? AND status = 'checked_in'", item.ID).Count(&used).Error; err != nil {
+		return err
+	}
+	if used > 0 {
+		return ErrTicketUsed
+	}
+	return tx.Model(&models.BookingTicket{}).
+		Where("order_item_id = ? AND status = 'valid'", item.ID).
+		Update("status", "refunded").Error
+}
+
 func init() {
 	booking.RegisterFulfiller("seat", ticketFulfiller{})
 	booking.RegisterFulfiller("tier", ticketFulfiller{})

@@ -15,7 +15,7 @@ type BookingEvent struct {
 	OwnerID     uint      `json:"owner_id" gorm:"index"`
 	Slug        string    `json:"slug" gorm:"uniqueIndex;not null"`
 	Name        string    `json:"name" gorm:"not null"`
-	StartAt     time.Time `json:"start_at" gorm:"not null"` // fixed showtime, UTC
+	StartAt     time.Time `json:"start_at" gorm:"not null;index"` // fixed showtime, UTC; indexed for retention
 	Timezone    string    `json:"timezone" gorm:"not null;default:UTC"`
 	Status      string    `json:"status" gorm:"index;not null;default:scheduled"` // scheduled|cancelled
 	MaxPerBuyer int       `json:"max_per_buyer" gorm:"not null;default:0"`        // 0 = unlimited

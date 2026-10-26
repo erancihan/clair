@@ -297,63 +297,6 @@ func JoinWaitlist(db *gorm.DB, invID uint, ownerRef string) (*models.BookingWait
 	return &entry, int(ahead) + 1, nil
 }
 
-// CaptureOrder commits every hold on an order and fulfils each item in ONE
-// transaction (so the money path is atomic), then marks the order paid.
-// Idempotent via the payment IdempotencyKey. `pay` supplies the payment record.
-func CaptureOrder(db *gorm.DB, orderID uint, pay models.BookingPayment, now time.Time) error {
-	return WithWriteRetry(func() error {
-		return db.Transaction(func(tx *gorm.DB) error {
-			pay.OrderID = orderID
-			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&pay)
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
-				return nil // duplicate webhook delivery
-			}
-
-			var order models.BookingOrder
-			if err := tx.First(&order, orderID).Error; err != nil {
-				return err
-			}
-			if order.Status == "paid" {
-				return nil
-			}
-
-			var items []models.BookingOrderItem
-			if err := tx.Where("order_id = ?", orderID).Find(&items).Error; err != nil {
-				return err
-			}
-			for i := range items {
-				it := items[i]
-				h, err := CommitTx(tx, it.HoldToken, now)
-				if err != nil {
-					return err
-				}
-				var inv models.BookingInventory
-				if err := tx.First(&inv, h.InventoryID).Error; err != nil {
-					return err
-				}
-				f, ok := FulfillerFor(OwnerKind(inv))
-				if !ok {
-					return fmt.Errorf("booking: no fulfiller for inventory %d", inv.ID)
-				}
-				fid, err := f.Fulfill(tx, order, it, inv)
-				if err != nil {
-					return err
-				}
-				if err := tx.Model(&models.BookingOrderItem{}).Where("id = ?", it.ID).
-					Updates(map[string]any{"status": "fulfilled", "fulfilled_id": fid}).Error; err != nil {
-					return err
-				}
-			}
-			return tx.Model(&models.BookingOrder{}).
-				Where("id = ? AND status = 'pending'", orderID).
-				Update("status", "paid").Error
-		})
-	})
-}
-
 // ReapExpiredHolds releases expired active holds and expires stale pending
 // orders whose holds are all gone. Returns the number of holds released and
 // every failure it met on the way; a hold that fails to release is reported,
@@ -372,9 +315,27 @@ func ReapExpiredHolds(db *gorm.DB, now time.Time) (int, error) {
 		}
 		released++
 	}
-	if err := db.Model(&models.BookingOrder{}).
-		Where("status = 'pending' AND updated_at <= ?", now.Add(-30*time.Minute)).
-		Where("NOT EXISTS (SELECT 1 FROM booking_holds WHERE booking_holds.order_id = booking_orders.id AND booking_holds.status = 'active')").
+	stale := func() *gorm.DB {
+		return db.Model(&models.BookingOrder{}).
+			Where("status = 'pending' AND updated_at <= ?", now.Add(-30*time.Minute)).
+			Where("NOT EXISTS (SELECT 1 FROM booking_holds WHERE booking_holds.order_id = booking_orders.id AND booking_holds.status = 'active')")
+	}
+	charged := "EXISTS (SELECT 1 FROM booking_payments p WHERE p.order_id = booking_orders.id AND p.status = 'succeeded' AND p.kind IN ('capture', 'charge'))"
+
+	// A stale order that took money (its fulfilment failed after the payment
+	// was recorded) is cancelled, which refunds it. Expiring it would keep
+	// the money.
+	var paidIn []uint
+	if err := stale().Where(charged).Limit(500).Pluck("id", &paidIn).Error; err != nil {
+		errs = append(errs, fmt.Errorf("find stale charged orders: %w", err))
+	}
+	for _, id := range paidIn {
+		if err := CancelOrder(db, id, now); err != nil {
+			errs = append(errs, fmt.Errorf("refund stale order %d: %w", id, err))
+		}
+	}
+
+	if err := stale().Where("NOT "+charged).
 		Update("status", "expired").Error; err != nil {
 		errs = append(errs, fmt.Errorf("expire stale orders: %w", err))
 	}

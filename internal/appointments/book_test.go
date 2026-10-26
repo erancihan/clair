@@ -67,7 +67,7 @@ func TestBook_FreeFlow_HappyThenSoldOutThenCancel(t *testing.T) {
 	}
 
 	// cancelling frees the slot
-	if err := appointments.CancelByToken(db, appt.CancelToken); err != nil {
+	if err := appointments.CancelByToken(db, appt.CancelToken, time.Now()); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 	if _, err := appointments.Book(db, appointments.BookInput{Schedule: sched, StartAt: start, GuestName: "Cara"}, now); err != nil {
@@ -110,13 +110,13 @@ func TestBook_CancelByToken_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("book: %v", err)
 	}
-	if err := appointments.CancelByToken(db, appt.CancelToken); err != nil {
+	if err := appointments.CancelByToken(db, appt.CancelToken, time.Now()); err != nil {
 		t.Fatalf("first cancel: %v", err)
 	}
-	if err := appointments.CancelByToken(db, appt.CancelToken); err != nil {
+	if err := appointments.CancelByToken(db, appt.CancelToken, time.Now()); err != nil {
 		t.Fatalf("second cancel should be a no-op, got: %v", err)
 	}
-	if err := appointments.CancelByToken(db, "nonexistent-token"); err != nil {
+	if err := appointments.CancelByToken(db, "nonexistent-token", time.Now()); err != nil {
 		t.Fatalf("unknown token should be a no-op, got: %v", err)
 	}
 }
@@ -195,7 +195,7 @@ func TestCancelByToken_DoesNotRefundATicketOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := appointments.CancelByToken(db, appt.CancelToken); err != nil {
+	if err := appointments.CancelByToken(db, appt.CancelToken, time.Now()); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 

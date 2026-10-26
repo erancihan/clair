@@ -34,9 +34,19 @@ func TestAurenorScheduleSlugsAreSeeded(t *testing.T) {
 		t.Fatal("no schedule slugs rendered by the Aurenor pages")
 	}
 
+	renderedSet := map[string]bool{}
 	for _, slug := range rendered {
+		renderedSet[slug] = true
 		if !seeded[slug] {
 			t.Errorf("page renders schedule slug %q, which the seeder never creates", slug)
+		}
+	}
+
+	// And the other way: a seeded schedule no page offers is a service nobody
+	// can reach.
+	for slug := range seeded {
+		if !renderedSet[slug] {
+			t.Errorf("schedule %q is seeded but no page renders it", slug)
 		}
 	}
 }
@@ -75,7 +85,7 @@ func TestAurenorServiceScreensBindTheirSchedule(t *testing.T) {
 }
 
 // TestWiredAurenorPagesDropThePreviewBadge pins the badge to what is actually
-// mock: the appointment pages are live, the theater is not.
+// mock. Every Aurenor page is wired now, so none of them carries it.
 func TestWiredAurenorPagesDropThePreviewBadge(t *testing.T) {
 	srv := newRoutesServer(t)
 	client := &http.Client{
@@ -92,7 +102,9 @@ func TestWiredAurenorPagesDropThePreviewBadge(t *testing.T) {
 		{path: "/aurenor/hospitals/solvarre-general", wantBadge: false},
 		{path: "/aurenor/consulate", wantBadge: false},
 		{path: "/aurenor/bureau", wantBadge: false},
-		{path: "/aurenor/theaters/grand", wantBadge: true},
+		// The theater sells for real since B2; its badge now says the payment
+		// is simulated rather than that the page is a preview.
+		{path: "/aurenor/theaters/grand", wantBadge: false},
 	}
 
 	for _, tc := range tests {

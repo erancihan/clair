@@ -35,7 +35,7 @@ func TestTheaterEventSlugsMatchTheSeed(t *testing.T) {
 
 	total := 0
 	for _, venue := range aurenor.TheaterVenueSlugs() {
-		slugs := aurenor.TheaterEventSlugs(venue)
+		slugs := aurenor.TheaterEventSlugs(venue, time.Now())
 		if len(slugs) == 0 {
 			t.Errorf("theater %q has no showings", venue)
 		}
@@ -71,7 +71,7 @@ func TestTheaterPageIsLive(t *testing.T) {
 	if !strings.Contains(body, `x-data="theater(`) {
 		t.Error("theater page renders no seat-map component")
 	}
-	for _, slug := range aurenor.TheaterEventSlugs("grand") {
+	for _, slug := range aurenor.TheaterEventSlugs("grand", time.Now()) {
 		if !strings.Contains(body, slug) {
 			t.Errorf("theater page does not embed showing %q", slug)
 		}
@@ -81,9 +81,12 @@ func TestTheaterPageIsLive(t *testing.T) {
 	if strings.Contains(body, "10:45") {
 		t.Error("theater page still renders hardcoded mock showtimes")
 	}
-	// Checkout is genuinely not wired, so the page must still say so.
-	if !strings.Contains(body, "Preview ·") {
-		t.Error("theater page drops the notice that checkout is not wired")
+	// The payment behind checkout is simulated, and the page has to say so.
+	if !strings.Contains(body, "payment is mocked") {
+		t.Error("theater page drops the notice that payment is simulated")
+	}
+	if !strings.Contains(body, `x-data="theaterTickets"`) {
+		t.Error("theater page renders no my-tickets panel")
 	}
 }
 
@@ -166,7 +169,7 @@ func getSeats(t *testing.T, ts *httptest.Server, slug string) []theaterSeat {
 func firstSeated(t *testing.T, ts *httptest.Server) (string, theaterEvent) {
 	t.Helper()
 
-	for _, slug := range aurenor.TheaterEventSlugs("grand") {
+	for _, slug := range aurenor.TheaterEventSlugs("grand", time.Now()) {
 		ev := getEvent(t, ts, slug)
 		for _, tier := range ev.Tiers {
 			if tier.Kind == "seated" {
@@ -290,7 +293,7 @@ func TestTheaterSeatHold(t *testing.T) {
 func TestTheaterSeatHoldRejectsForeignSeats(t *testing.T) {
 	ts := newTheaterServer(t)
 
-	slugs := aurenor.TheaterEventSlugs("grand")
+	slugs := aurenor.TheaterEventSlugs("grand", time.Now())
 	var seatedSlugs []string
 	for _, slug := range slugs {
 		if len(getSeats(t, ts, slug)) > 0 {
@@ -316,7 +319,7 @@ func TestTheaterGAHold(t *testing.T) {
 	var slug string
 	var tierID uint
 	var before int
-	for _, s := range aurenor.TheaterEventSlugs("grand") {
+	for _, s := range aurenor.TheaterEventSlugs("grand", time.Now()) {
 		ev := getEvent(t, ts, s)
 		for _, tier := range ev.Tiers {
 			if tier.Kind == "ga" {
@@ -551,7 +554,7 @@ func TestTheaterShowingsCarryTheirTierShape(t *testing.T) {
 	}
 
 	for _, venue := range aurenor.TheaterVenueSlugs() {
-		for _, s := range aurenor.TheaterShowings(venue) {
+		for _, s := range aurenor.TheaterShowings(venue, time.Now()) {
 			def, ok := seeded[s.Slug]
 			if !ok {
 				t.Errorf("showing %q is not seeded", s.Slug)
@@ -668,7 +671,7 @@ func TestTheaterSeatStreamUnknownEvent(t *testing.T) {
 // lists, instead of once per showing.
 func TestEventSummaryAnswersTheWholeBoard(t *testing.T) {
 	ts := newTheaterServer(t)
-	slugs := aurenor.TheaterEventSlugs("grand")
+	slugs := aurenor.TheaterEventSlugs("grand", time.Now())
 
 	resp := doJSON(t, newJarClient(), "GET",
 		ts.URL+"/events/summary?slugs="+strings.Join(slugs, ","), nil)
@@ -704,9 +707,10 @@ func TestEventSummaryAnswersTheWholeBoard(t *testing.T) {
 // whole board.
 func TestEventSummarySkipsUnknownSlugs(t *testing.T) {
 	ts := newTheaterServer(t)
+	known := aurenor.TheaterEventSlugs("grand", time.Now())[0]
 
 	resp := doJSON(t, newJarClient(), "GET",
-		ts.URL+"/events/summary?slugs=grand-dune-part-two-1000,no-such-showing", nil)
+		ts.URL+"/events/summary?slugs="+known+",no-such-showing", nil)
 	mustStatus(t, resp, http.StatusOK, "summary with an unknown slug")
 	defer resp.Body.Close()
 
@@ -714,7 +718,7 @@ func TestEventSummarySkipsUnknownSlugs(t *testing.T) {
 		Slug string `json:"slug"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&rows)
-	if len(rows) != 1 || rows[0].Slug != "grand-dune-part-two-1000" {
+	if len(rows) != 1 || rows[0].Slug != known {
 		t.Errorf("want only the known showing, got %+v", rows)
 	}
 }
@@ -741,7 +745,7 @@ func TestEventSummaryIsBounded(t *testing.T) {
 // connection covering every showing it lists.
 func TestEventSummaryStreamPushesCounts(t *testing.T) {
 	ts := newTheaterServer(t)
-	slugs := aurenor.TheaterEventSlugs("grand")
+	slugs := aurenor.TheaterEventSlugs("grand", time.Now())
 	target, _ := firstSeated(t, ts)
 	seats := getSeats(t, ts, target)
 
@@ -856,7 +860,7 @@ func TestTheaterGARequestIsBounded(t *testing.T) {
 
 	var slug string
 	var tierID uint
-	for _, s := range aurenor.TheaterEventSlugs("grand") {
+	for _, s := range aurenor.TheaterEventSlugs("grand", time.Now()) {
 		ev := getEvent(t, ts, s)
 		for _, tier := range ev.Tiers {
 			if tier.Kind == "ga" {
@@ -923,7 +927,7 @@ func TestEventSummaryStreamCostsOneLookupPerChange(t *testing.T) {
 	ts := httptest.NewServer(server.NewBackEnd(context.Background(), zap.NewNop(), nil, db).Routes())
 	t.Cleanup(ts.Close)
 
-	slugs := aurenor.TheaterEventSlugs("grand")
+	slugs := aurenor.TheaterEventSlugs("grand", time.Now())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
