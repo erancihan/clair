@@ -7,6 +7,11 @@ services:
       POSTGRES_USER: clair
       POSTGRES_PASSWORD: clair
       POSTGRES_DB: clair
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clair -d clair"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - clair-postgres:/var/lib/postgresql/data
 
@@ -15,23 +20,70 @@ services:
     ports:
       - "6379:6379"
 
-  clair:
+  # The schema is a deliberate step, not a side effect of booting. This
+  # one-shot service runs it, and the long-lived services wait for it.
+  migrate:
     build:
       context: ./
       dockerfile: Dockerfile
     depends_on:
-      - postgres
-      - valkey
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+    command: ["migrate"]
+
+  # Optional: `docker compose --profile seed up seed` fills the Aurenor catalog.
+  seed:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    profiles: ["seed"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+    command: ["seed"]
+
+  server:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
     ports:
       - "4000:4000"
     volumes:
       - clair-public:/opt/clair/public
-    env_file: ".env"
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
       - VALKEY_HOST=valkey
       - PUBLIC_PATH=/opt/clair/public
-    command: ./clair.bin server
+    command: ["server"]
+
+  # The hold reaper. Without it an abandoned checkout keeps a seat forever.
+  scheduler:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+    command: ["scheduler"]
 
 volumes:
   clair-postgres:

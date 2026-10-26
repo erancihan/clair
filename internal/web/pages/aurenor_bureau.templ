@@ -1,0 +1,9 @@
+package pages
+
+// AurenorBureau is the civic-services example (the appointment system): licence,
+// ID and records appointments. A single national office, so no collection list.
+templ AurenorBureau() {
+	@aurenorPage("Aurenor Civic Bureau", "Counter-service appointments — same appointment service as the hospitals, a civic vocabulary.", "") {
+		@apptGrid(ServicesFor("bureau", ""))
+	}
+}

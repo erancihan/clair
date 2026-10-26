@@ -191,8 +191,23 @@ func TestTicketingHTTP_PerBuyerLimit(t *testing.T) {
 	resp = doJSON(t, guest, "POST", fmt.Sprintf("%s/events/limited/tiers/%d/hold", ts.URL, tierID), map[string]any{"qty": 2})
 	mustStatus(t, resp, http.StatusCreated, "hold 2")
 	resp.Body.Close()
-	// The same buyer asking for 1 more exceeds the cap of 2.
+
+	// qty is the total the buyer wants, not an increment, so asking for fewer
+	// than they hold changes nothing — and the answer says how many are really
+	// held rather than echoing the request back.
 	resp = doJSON(t, guest, "POST", fmt.Sprintf("%s/events/limited/tiers/%d/hold", ts.URL, tierID), map[string]any{"qty": 1})
+	mustStatus(t, resp, http.StatusCreated, "hold fewer than already held")
+	var held struct {
+		Qty int `json:"qty"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&held)
+	resp.Body.Close()
+	if held.Qty != 2 {
+		t.Errorf("hold reports %d units, but 2 are held", held.Qty)
+	}
+
+	// Topping up past the cap of 2 is refused.
+	resp = doJSON(t, guest, "POST", fmt.Sprintf("%s/events/limited/tiers/%d/hold", ts.URL, tierID), map[string]any{"qty": 3})
 	mustStatus(t, resp, http.StatusConflict, "hold beyond limit")
 	resp.Body.Close()
 }

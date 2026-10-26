@@ -1,0 +1,21 @@
+package pages
+
+// AurenorHospitals lists the nation's hospitals and clinics (the appointment
+// system). The collection scheme lets more than one exist.
+templ AurenorHospitals() {
+	@aurenorPage("Hospitals of Aurenor", "Doctor appointments across the nation's hospitals and clinics. Pick one to see its departments.", "") {
+		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+			for _, v := range aurenorHospitals {
+				@institutionCard("/aurenor/hospitals/"+v.Slug, v.Name, v.Location, v.Blurb)
+			}
+		</div>
+	}
+}
+
+// AurenorHospital is one hospital's departments. Each books that hospital's own
+// schedules, so the two hospitals never share inventory.
+templ AurenorHospital(v Venue) {
+	@aurenorPage(v.Name, v.Location+" — book a doctor by department.", "") {
+		@apptGrid(ServicesFor("hospitals", v.Slug))
+	}
+}

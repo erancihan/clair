@@ -41,8 +41,8 @@ var (
 // RegisterGuestMigrator registers m to run on every successful login, under name
 // for logging.
 //
-// Domains call this from their own package — typically from Mount — so this
-// layer never imports them: the dependency runs domains -> authentication and
+// Domains call this from their own package — typically from the constructor
+// of their API — so this layer never imports them: the dependency runs domains -> authentication and
 // the registry is what inverts it. Registering nothing is the normal case and
 // costs nothing.
 //
@@ -56,6 +56,15 @@ func RegisterGuestMigrator(name string, m GuestMigrator) {
 	guestMigratorsMu.Lock()
 	defer guestMigratorsMu.Unlock()
 
+	// One migrator per name. The booking API registers on construction, and a
+	// test suite constructs it dozens of times; without this every login would
+	// run the same migration once per construction.
+	for i := range guestMigrators {
+		if guestMigrators[i].name == name {
+			guestMigrators[i].migrate = m
+			return
+		}
+	}
 	guestMigrators = append(guestMigrators, registeredMigrator{name: name, migrate: m})
 }
 

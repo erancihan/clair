@@ -141,8 +141,12 @@ func createSchedule(ctx server_context.BackEndContext) http.HandlerFunc {
 			return nil
 		})
 		if err != nil {
+			if isUniqueViolation(err) {
+				http.Error(w, "slug already taken", http.StatusConflict)
+				return
+			}
 			ctx.Logger.Error("create schedule", zap.Error(err))
-			http.Error(w, "slug likely taken or database error", http.StatusConflict)
+			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}
 

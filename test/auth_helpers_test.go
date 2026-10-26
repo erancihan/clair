@@ -5,41 +5,33 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/erancihan/clair/internal/database"
 	"github.com/erancihan/clair/internal/database/models"
+	"github.com/erancihan/clair/internal/testsupport"
 	authentication "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// newAuthTestDB opens a gorm connection to the test Postgres database and resets
-// the whole app schema (drop + migrate over the migration set) so each auth test
-// starts from a clean schema that includes the Role column.
+// newAuthTestDB gives a test its own migrated schema.
+//
+// It used to drop and re-migrate the tables in whatever DATABASE_URL pointed at,
+// which is the same database a developer runs the site against: a test run wiped
+// their data, and two concurrent runs corrupted each other. An isolated schema,
+// dropped on cleanup, costs the same and destroys nothing.
 func newAuthTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = defaultTestDatabaseURL
-	}
-
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("failed to connect to test database at %s: %v", dsn, err)
-	}
-
-	dropAppTables(t, db)
-
+	db := testsupport.PostgresDB(t)
+	// The full production migration, not just AutoMigrate: these tests exercise
+	// the same schema an operator gets from `clair migrate`.
 	if err := database.Migrate(db); err != nil {
 		t.Fatalf("failed to migrate the test schema: %v", err)
 	}
-
 	return db
 }
 

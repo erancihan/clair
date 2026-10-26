@@ -127,8 +127,8 @@ func TestComputeAvailability_FullyBookedExcluded(t *testing.T) {
 	past := mustUTC(t, "2026-01-01T00:00:00Z")
 	from := mustUTC(t, "2026-03-02T00:00:00Z")
 	to := mustUTC(t, "2026-03-03T00:00:00Z")
-	booked := map[time.Time]int{
-		mustUTC(t, "2026-03-02T09:00:00Z"): 1, // capacity 1 → this slot is full
+	booked := map[time.Time]appointments.SlotCount{
+		mustUTC(t, "2026-03-02T09:00:00Z"): {Booked: 1, Capacity: 1}, // capacity 1 → this slot is full
 	}
 
 	slots, err := appointments.ComputeAvailability(sched, rules, nil, booked, from, to, past)

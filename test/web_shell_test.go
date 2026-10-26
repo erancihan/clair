@@ -150,17 +150,18 @@ func TestShellPublishesUsableCSRFToken(t *testing.T) {
 }
 
 // TestShellRendersUserMenu covers the other half of the shell: the account slot
-// is driven by CurrentUser, so an anonymous visitor gets a sign-in link and a
+// is driven by CurrentUser. Sign-in is deliberately unlisted — the login route
+// is secret — so an anonymous visitor gets no login link at all, while a
 // signed-in one gets their menu.
 func TestShellRendersUserMenu(t *testing.T) {
 	srv := newShellTestServer(t)
 	createUser(t, srv.db, "shell@example.com", "shell-password", authentication.RoleAdmin)
 
-	t.Run("anonymous visitors get a sign-in link", func(t *testing.T) {
+	t.Run("anonymous visitors get no sign-in link", func(t *testing.T) {
 		body := renderPage(t, jarClient(t), srv)
 
-		if !strings.Contains(body, `href="/login"`) || !strings.Contains(body, "Sign in") {
-			t.Errorf("expected a sign-in link for an anonymous visitor, got:\n%s", body)
+		if strings.Contains(body, `href="/login"`) || strings.Contains(body, "Sign in") {
+			t.Errorf("expected no sign-in link for an anonymous visitor (login is secret), got:\n%s", body)
 		}
 		if strings.Contains(body, "Sign out") {
 			t.Error("expected no sign-out link for an anonymous visitor")

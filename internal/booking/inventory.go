@@ -1,11 +1,11 @@
-// Package booking is the shared reservation kernel: it owns capacity counting
-// for every bookable thing, independent of net/http. Domain modules
-// (appointments, ticketing) compose these primitives.
+// Package booking is the shared booking service: it owns capacity counting for
+// every bookable thing, independent of net/http. Domain modules (appointments,
+// ticketing) compose these primitives and map their own vocabulary onto them.
 //
-// This file contains the SQLite-and-Postgres-safe primitives used by the free
-// appointment flow (EnsureInventory, BookDirect, Cancel, Block, SetCapacity).
-// Holds, orders, payments, and seat groups are Postgres-only and live in the
-// later phase described in docs/booking-system-design.md.
+// This file holds the inventory primitives: the counter row per bookable unit
+// and the mutations over it (EnsureInventory, BookDirect, Cancel, Block,
+// SetCapacity). Holds, orders, payments and the reaper live in hold.go;
+// fulfilment in fulfill.go; change notification in notify.go and live/.
 package booking
 
 import (
@@ -119,10 +119,18 @@ func Cancel(tx *gorm.DB, invID uint, qty int, now time.Time) error {
 }
 
 // Block removes qty sellable units without deleting the row (house/ADA/comp).
+// Returns ErrSoldOut when the units are not free to block.
 func Block(tx *gorm.DB, invID uint, qty int) error {
-	return tx.Model(&models.BookingInventory{}).
+	res := tx.Model(&models.BookingInventory{}).
 		Where("id = ? AND booked + held + blocked + ? <= capacity", invID, qty).
-		UpdateColumn("blocked", gorm.Expr("blocked + ?", qty)).Error
+		UpdateColumn("blocked", gorm.Expr("blocked + ?", qty))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrSoldOut
+	}
+	return nil
 }
 
 // SetCapacity changes capacity, refusing to drop below booked+held+blocked.

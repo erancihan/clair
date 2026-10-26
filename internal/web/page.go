@@ -26,8 +26,9 @@ type Page struct {
 	// must be the token bound to the caller's session and already persisted to
 	// the session cookie, or the CSRF middleware will reject what JS sends.
 	CSRFToken string
-	// User is the signed-in visitor, or nil for an anonymous one - in which case
-	// the shell renders a sign-in link in place of the user menu.
+	// User is the signed-in visitor, or nil for an anonymous one — in which case
+	// the account slot in the header renders nothing. There is deliberately no
+	// public sign-in link.
 	User *PageUser
 }
 

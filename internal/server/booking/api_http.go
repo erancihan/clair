@@ -1,5 +1,5 @@
 // Package booking is the HTTP layer for the booking domain: appointments and
-// ticketing, both sitting on the shared reservation kernel in internal/booking.
+// ticketing, both sitting on the shared booking service in internal/booking.
 //
 // Handlers here stay thin. They decode a request, resolve who is asking, call
 // into the domain packages and encode the answer; every rule about capacity,
@@ -8,10 +8,12 @@ package booking
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
 	server_context "github.com/erancihan/clair/internal/server/context"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -36,4 +38,12 @@ func parseID(r *http.Request, name string) (uint, bool) {
 		return 0, false
 	}
 	return uint(v), true
+}
+
+// isUniqueViolation reports a Postgres unique-constraint failure (SQLSTATE
+// 23505), which is what "that slug is taken" looks like from here. Anything
+// else is not the caller's fault and must not be reported as if it were.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

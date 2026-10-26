@@ -1,0 +1,62 @@
+package pages
+
+// The date strip both booking surfaces share.
+//
+// A film shows once or twice a day and a clinic keeps the same hours every day,
+// so a day is a filter, not a heading to scroll past. One component for both
+// surfaces is what keeps the theater and the hospital from drifting into two
+// different date pickers.
+//
+// It binds to `days`, `selectedDay` and `selectDay(key)` on the surrounding
+// component, so each surface builds the days from whatever it already fetched.
+templ aurenorDateStrip() {
+	<div class="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+		<div class="flex w-max gap-2 border-b border-zinc-200 pb-3 dark:border-zinc-800" role="tablist" aria-label="Choose a day">
+			<template x-for="day in days" :key="day.key">
+				<button type="button" role="tab" @click="selectDay(day.key)"
+					:aria-selected="selectedDay === day.key"
+					:aria-label="day.label"
+					:class="selectedDay === day.key
+						? 'bg-teal-600 text-white ring-teal-600'
+						: 'bg-white text-zinc-600 ring-zinc-200 hover:ring-teal-500 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-700'"
+					class="flex min-w-16 flex-col items-center rounded-2xl px-3 py-2 text-center ring-1 transition">
+					<span class="text-[11px] uppercase tracking-wide opacity-70" x-text="day.short"></span>
+					<span class="text-base font-semibold tabular-nums" x-text="day.dayNumber"></span>
+					<span class="text-[11px] opacity-70" x-text="day.month"></span>
+				</button>
+			</template>
+		</div>
+	</div>
+}
+
+// aurenorDaysScript groups timestamped things into days.
+//
+// Both surfaces build their strip from what they already fetched, so there is no
+// "which days are open" endpoint to invent and nothing to keep in sync.
+templ aurenorDaysScript() {
+	<script>
+		window.aurenorDays = window.aurenorDays || function (items, field) {
+			const days = [];
+			let current = null;
+			for (const item of items) {
+				const iso = item[field];
+				if (!iso) continue;
+				const when = new Date(iso);
+				const key = when.toDateString();
+				if (!current || current.key !== key) {
+					current = {
+						key: key,
+						label: when.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }),
+						short: when.toLocaleDateString([], { weekday: 'short' }),
+						dayNumber: String(when.getDate()),
+						month: when.toLocaleDateString([], { month: 'short' }),
+						items: [],
+					};
+					days.push(current);
+				}
+				current.items.push(item);
+			}
+			return days;
+		};
+	</script>
+}

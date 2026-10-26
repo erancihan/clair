@@ -11,8 +11,7 @@ import (
 
 	"github.com/erancihan/clair/internal/cmd"
 	"github.com/erancihan/clair/internal/database"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	"github.com/erancihan/clair/internal/testsupport"
 )
 
 // defaultTestDatabaseURL points at the Postgres service defined in
@@ -26,13 +25,18 @@ func setupTestServer(t *testing.T, port string) (string, func()) {
 	if dsn == "" {
 		dsn = defaultTestDatabaseURL
 	}
-	os.Setenv("DATABASE_URL", dsn)
-	os.Setenv("SERVER_PORT", port)
+	// The server under test opens its own connection from DATABASE_URL, so it is
+	// pointed at a schema of this test's own. Resetting the shared one instead
+	// would drop the tables of anything else using this database - including the
+	// developer's running site.
+	schemaDSN, db := testsupport.PostgresSchema(t)
+	if err := database.Migrate(db); err != nil {
+		t.Fatalf("failed to migrate the test schema: %v", err)
+	}
 
-	// Reset the schema so each run starts from a clean slate. The server no
-	// longer migrates on startup, so the fixture applies the schema itself -
-	// the same step an operator runs with `clair migrate`.
-	resetTestDatabase(t, dsn)
+	os.Setenv("DATABASE_URL", schemaDSN)
+	os.Setenv("SERVER_PORT", port)
+	t.Cleanup(func() { os.Setenv("DATABASE_URL", dsn) })
 
 	// Context to cancel server after test
 	ctx, cancel := context.WithCancel(context.Background())
@@ -72,46 +76,6 @@ func setupTestServer(t *testing.T, port string) (string, func()) {
 		cancel()
 		// Optional: Add a small sleep to let the OS release the port if running tests rapidly
 		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// resetTestDatabase drops the tables managed by the app and re-applies the
-// schema, so that tests are idempotent even when run repeatedly against a
-// persistent Postgres instance.
-func resetTestDatabase(t *testing.T, dsn string) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("failed to connect to test database at %s: %v", dsn, err)
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatalf("failed to access test database handle: %v", err)
-	}
-	defer sqlDB.Close()
-
-	dropAppTables(t, db)
-
-	if err := database.Migrate(db); err != nil {
-		t.Fatalf("failed to migrate the test schema: %v", err)
-	}
-}
-
-// dropAppTables drops every table under migration, newest domain first.
-//
-// It reads the migration set from internal/database rather than naming models,
-// so a domain that adds a table gets it reset here for free - no edit to this
-// fixture, which every domain would otherwise have to make.
-func dropAppTables(t *testing.T, db *gorm.DB) {
-	t.Helper()
-
-	// Drop in reverse: domain tables may carry foreign keys onto the shared
-	// identity table, and a referenced table cannot be dropped first.
-	appModels := database.MigrationModels()
-	for i := len(appModels) - 1; i >= 0; i-- {
-		if err := db.Migrator().DropTable(appModels[i]); err != nil {
-			t.Fatalf("failed to reset test database: %v", err)
-		}
 	}
 }
 

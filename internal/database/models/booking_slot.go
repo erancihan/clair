@@ -6,7 +6,7 @@ import "time"
 // the first time somebody books it. Availability itself is computed, so a
 // schedule does not write a row per slot up front.
 //
-// A slot owns a kernel BookingInventory row and keeps no counter of its own:
+// A slot owns a booking-service BookingInventory row and keeps no counter of its own:
 // there is exactly one authoritative count per reservable thing, and it lives in
 // the inventory row the capacity guard writes.
 type BookingSlot struct {

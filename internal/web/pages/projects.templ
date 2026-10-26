@@ -1,0 +1,148 @@
+package pages
+
+// Projects is a static portfolio page. It carries no dynamic data: entries are
+// added by hand here, one card block per project. Copy a card, then edit its
+// href, title, and blurb.
+templ Projects() {
+	<div class="mt-16 sm:mt-16 sm:px-8">
+		<div class="mx-auto max-w-7xl lg:px-8">
+			<div class="relative px-4 sm:px-8 lg:px-12">
+				<div class="mx-auto max-w-2xl lg:max-w-5xl">
+					<div class="mb-8">
+						<h1 class="text-4xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100 sm:text-5xl">
+							Projects
+						</h1>
+						<p class="mt-4 text-base text-zinc-600 dark:text-zinc-400">
+							Things I have built.
+						</p>
+					</div>
+				</div>
+
+				<div class="mx-auto max-w-2xl lg:max-w-5xl">
+					<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+						<!-- Add a project by copying one <a> card block below and editing the href, title, and blurb. -->
+						<a href="https://github.com/erancihan/clair" target="_blank" rel="noreferrer" class="block">
+							<div class="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-8 shadow-sm">
+								<h2 class="text-2xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100 sm:text-3xl">
+									clair
+								</h2>
+								<p class="mt-4 text-base text-zinc-600 dark:text-zinc-400">
+									This site and the services behind it.
+								</p>
+							</div>
+						</a>
+					</div>
+				</div>
+
+				<div class="mx-auto max-w-2xl lg:max-w-5xl mt-16">
+					<div class="mb-6">
+						<h2 class="text-3xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100">
+							Aurenor — booking simulations
+						</h2>
+						<p class="mt-3 text-base text-zinc-600 dark:text-zinc-400">
+							An imaginary nation on the Gilt Coast, demoing the booking service — two systems, a handful of institutions.
+						</p>
+					</div>
+
+					<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+						@simCard("/aurenor/theaters", "Theaters", "seat reservation") {
+							<svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="h-5 w-5">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M16.5 6v.75m0 3v.75m0 3v.75m0 3V18m-9-5.25h5.25M7.5 15h3M3.375 5.25c-.621 0-1.125.504-1.125 1.125v3.026a2.999 2.999 0 0 1 0 5.198v3.026c0 .621.504 1.125 1.125 1.125h17.25c.621 0 1.125-.504 1.125-1.125v-3.026a2.999 2.999 0 0 1 0-5.198V6.375c0-.621-.504-1.125-1.125-1.125H3.375Z"></path>
+							</svg>
+						}
+						@simCard("/aurenor/hospitals", "Hospitals", "appointments") {
+							<svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="h-5 w-5">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z"></path>
+							</svg>
+						}
+						@simCard("/aurenor/consulate", "Consulate", "visas") {
+							<svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="h-5 w-5">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418"></path>
+							</svg>
+						}
+						@simCard("/aurenor/bureau", "Civic Bureau", "appointments") {
+							<svg fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="h-5 w-5">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h1.5c.621 0 1.125.504 1.125 1.125V21"></path>
+							</svg>
+						}
+					</div>
+
+					@bookingReadme()
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// simCard is a compact icon card linking to one Aurenor institution collection.
+// The icon is passed as the card's children.
+templ simCard(href string, label string, subtitle string) {
+	<a href={ templ.SafeURL(href) }
+		class="group flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-teal-500/40 dark:border-zinc-800 dark:bg-zinc-800">
+		<span class="flex h-10 w-10 flex-none items-center justify-center rounded-xl bg-teal-50 text-teal-600 dark:bg-teal-400/10 dark:text-teal-400">
+			{ children... }
+		</span>
+		<span class="min-w-0">
+			<span class="block text-sm font-semibold text-zinc-800 transition group-hover:text-teal-500 dark:text-zinc-100 dark:group-hover:text-teal-400">{ label }</span>
+			<span class="block truncate text-xs text-zinc-500 dark:text-zinc-400">{ subtitle }</span>
+		</span>
+	</a>
+}
+
+// readmeRow is one expandable topic in the booking-system readme. Alpine drives
+// the open/closed state; the body starts hidden via an inline style so there is
+// no flash before Alpine initializes.
+templ readmeRow(title string) {
+	<div class="border-b border-zinc-200 dark:border-zinc-800" x-data="{ open: false }">
+		<button type="button" @click="open = !open" :aria-expanded="open"
+			class="flex w-full items-center justify-between gap-4 py-3 text-left">
+			<span class="text-sm font-medium text-zinc-800 dark:text-zinc-100">{ title }</span>
+			<svg viewBox="0 0 8 6" aria-hidden="true"
+				class="h-2 w-2 flex-none stroke-zinc-500 transition dark:stroke-zinc-400" :class="open ? 'rotate-180' : ''">
+				<path d="M1.75 1.75 4 4.25l2.25-2.5" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+			</svg>
+		</button>
+		<div x-show="open" style="display: none" class="pb-4 pr-6 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400 space-y-2">
+			{ children... }
+		</div>
+	</div>
+}
+
+// bookingReadme is the expandable explainer of how the booking service behind
+// every Aurenori institution works.
+templ bookingReadme() {
+	<div class="mt-14">
+		<h3 class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">How the booking system works</h3>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">One booking service behind every institution. Expand a topic.</p>
+		<div class="mt-4">
+			@readmeRow("One service, two vocabularies") {
+				<p>Every institution runs on one booking service. A hospital books <em>time slots</em>, a theater books <em>seats</em>, the consulate books <em>interviews</em> — underneath it is the same service reserving a unit of a limited resource. Only the noun changes.</p>
+			}
+			@readmeRow("Capacity is an invariant, not a report") {
+				<p>The booking service keeps <code>booked + held + blocked ≤ capacity</code> true at all times, enforced inside every write rather than reconciled by a nightly job — the mutation that would break it simply fails. Two people racing for the last seat: exactly one wins.</p>
+			}
+			@readmeRow("Availability is computed, never stored") {
+				<p>A schedule is a set of rules and exceptions — open hours, closures, per-slot capacity. Availability is derived from those rules against what is already booked or held, so there is no stale list of "free slots" to keep in sync.</p>
+			}
+			@readmeRow("Holds are temporary") {
+				<p>Choosing a seat or slot places a <strong>hold</strong> with a short lifetime — about ten minutes. It reserves the unit while you finish, then expires. A background reaper releases lapsed holds so an abandoned cart does not lock inventory.</p>
+			}
+			@readmeRow("Book as a guest — the token is the key") {
+				<p>No account required. A guest booking returns a one-time <strong>cancel token</strong>; that token is the only proof of ownership, shown once and kept by the visitor. Lose it and the booking can't be cancelled from the browser.</p>
+			}
+			@readmeRow("A guest can become an account") {
+				<p>Every visitor has a stable per-browser identity that carries their in-progress work. Sign in and that work — a held seat, a pending booking — migrates onto the account instead of being stranded.</p>
+			}
+			@readmeRow("Payment, where it applies") {
+				<p>Paid inventory — theater seats — turns a hold into an <strong>order</strong>, captured through a signed payment webhook. Free schedules such as a clinic or a civic desk skip payment entirely and confirm on booking.</p>
+			}
+			@readmeRow("Everything expires after a month") {
+				<p>Every booking and schedule row has a one-month lifetime. A sweeper drops anything past its business date — a show that has played, a slot that has passed — keeping the tables bounded without touching live data.</p>
+			}
+			@readmeRow("The data fills itself, realistically") {
+				<p>These are simulations, so a background job slowly populates bookings on demand curves: weekday mornings stay quiet and fill toward night, weekend showings sell through earlier in the week, seats sell two or three at a time. Small randomness keeps it lifelike.</p>
+			}
+		</div>
+	</div>
+}
+

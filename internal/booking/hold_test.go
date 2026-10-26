@@ -1,6 +1,7 @@
 package booking_test
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -181,5 +182,85 @@ func TestRelease_FreesHold(t *testing.T) {
 	}
 	if err := booking.Release(db, h.Token, now); err != nil {
 		t.Fatalf("second release should be a no-op, got: %v", err)
+	}
+}
+
+// TestRelease_RacesReclaimWithoutDoubleDecrement: an expired hold can be freed
+// by two paths at once — Release, and the reclaim step inside HoldUnitsTx. Only
+// one of them may decrement `held`. The long-lived hold keeps `held` positive so
+// the `held >= qty` guard cannot mask a second decrement.
+func TestRelease_RacesReclaimWithoutDoubleDecrement(t *testing.T) {
+	db := holdDB(t)
+	for round := 0; round < 20; round++ {
+		inv := &models.BookingInventory{Capacity: 20, TierID: uptr(uint(100 + round))}
+		if err := db.Create(inv).Error; err != nil {
+			t.Fatalf("seed inventory: %v", err)
+		}
+		base := time.Now()
+
+		if _, err := booking.HoldUnits(db, inv.ID, 5, "owner-long", nil, time.Hour, base); err != nil {
+			t.Fatalf("long hold: %v", err)
+		}
+		var tokens []string
+		for i := 0; i < 5; i++ {
+			h, err := booking.HoldUnits(db, inv.ID, 1, fmt.Sprintf("owner-short-%d", i), nil, time.Minute, base)
+			if err != nil {
+				t.Fatalf("short hold %d: %v", i, err)
+			}
+			tokens = append(tokens, h.Token)
+		}
+
+		later := base.Add(2 * time.Minute)
+		var wg sync.WaitGroup
+		for _, tok := range tokens {
+			wg.Add(1)
+			go func(tok string) {
+				defer wg.Done()
+				_ = booking.Release(db, tok, later)
+			}(tok)
+		}
+		for i := 0; i < 5; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, _ = booking.HoldUnits(db, inv.ID, 1, fmt.Sprintf("reclaimer-%d", i), nil, time.Hour, later)
+			}(i)
+		}
+		wg.Wait()
+
+		var active int64
+		db.Raw(`SELECT COALESCE(SUM(qty), 0) FROM booking_holds
+			WHERE inventory_id = ? AND status = 'active' AND expires_at > ?`, inv.ID, later).Scan(&active)
+		var got models.BookingInventory
+		db.First(&got, inv.ID)
+		if got.Held != int(active) {
+			t.Fatalf("round %d: held=%d but active holds total %d", round, got.Held, active)
+		}
+	}
+}
+
+// TestCommit_RefusesWhenCapacityWasCut: `held` is bookkeeping; capacity is the
+// truth. If the two disagree, the statement that writes `booked` must lose.
+func TestCommit_RefusesWhenCapacityWasCut(t *testing.T) {
+	db := holdDB(t)
+	inv := seedInv(t, db, 2)
+	now := time.Now()
+
+	h, err := booking.HoldUnits(db, inv.ID, 2, "owner", nil, time.Hour, now)
+	if err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	// Bypass SetCapacity on purpose: this is the corrupt state, not a valid edit.
+	if err := db.Exec(`UPDATE booking_inventories SET capacity = 1 WHERE id = ?`, inv.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := booking.Commit(db, h.Token, now); !errors.Is(err, booking.ErrSoldOut) {
+		t.Fatalf("commit over capacity: got %v, want ErrSoldOut", err)
+	}
+	var got models.BookingInventory
+	db.First(&got, inv.ID)
+	if got.Booked != 0 || got.Held != 2 {
+		t.Fatalf("after refused commit booked=%d held=%d, want 0/2", got.Booked, got.Held)
 	}
 }

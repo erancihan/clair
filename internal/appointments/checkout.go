@@ -27,9 +27,6 @@ func HoldSlot(db *gorm.DB, in HoldInput, now time.Time) (*models.BookingOrder, *
 	if !startUTC.After(now) {
 		return nil, nil, ErrPast
 	}
-	if err := validateOpen(db, in.Schedule, startUTC, now); err != nil {
-		return nil, nil, err
-	}
 
 	ttl := time.Duration(in.Schedule.HoldTTLMin) * time.Minute
 	var order *models.BookingOrder
@@ -37,6 +34,9 @@ func HoldSlot(db *gorm.DB, in HoldInput, now time.Time) (*models.BookingOrder, *
 
 	err := booking.WithWriteRetry(func() error {
 		return db.Transaction(func(tx *gorm.DB) error {
+			if err := validateOpen(tx, in.Schedule, startUTC, now); err != nil {
+				return err
+			}
 			slot, err := ensureSlot(tx, in.Schedule, startUTC)
 			if err != nil {
 				return err
@@ -92,7 +92,7 @@ func (slotFulfiller) Fulfill(tx *gorm.DB, order models.BookingOrder, item models
 	appt := models.BookingAppointment{
 		ScheduleID: slot.ScheduleID, SlotID: slot.ID, UserID: order.UserID,
 		GuestName: order.BuyerName, GuestEmail: order.BuyerEmail,
-		StartAt: slot.StartAt, EndAt: slot.EndAt, Status: "confirmed", CancelToken: newToken(),
+		StartAt: slot.StartAt, EndAt: slot.EndAt, Status: "confirmed", CancelToken: booking.NewToken(),
 	}
 	if err := tx.Create(&appt).Error; err != nil {
 		return 0, err

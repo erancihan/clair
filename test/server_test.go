@@ -41,8 +41,8 @@ func TestAuthentication(t *testing.T) {
 
 	// 1. Unauthenticated Access Step
 	t.Run("Fail to access protected route without token", func(t *testing.T) {
-		protectedReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/protected", nil)
-		// /api/protected is a JSON API route; identify as a JSON caller so the
+		protectedReq, _ := http.NewRequest(http.MethodGet, baseURL+"/appointments/me", nil)
+		// /appointments/me is a JSON API route; identify as a JSON caller so the
 		// content-negotiated auth failure returns 401 rather than redirecting a
 		// browser to the login page.
 		protectedReq.Header.Set("Accept", "application/json")
@@ -106,7 +106,7 @@ func TestAuthentication(t *testing.T) {
 			t.Skip("Skipping because no cookie was received in previous step")
 		}
 
-		authReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/protected", nil)
+		authReq, _ := http.NewRequest(http.MethodGet, baseURL+"/appointments/me", nil)
 		for _, cookie := range sessionCookies {
 			authReq.AddCookie(cookie)
 		}
@@ -124,3 +124,23 @@ func TestAuthentication(t *testing.T) {
 }
 
 // Helper to send POST JSON requests easily
+
+func TestHealthReportsTheDatabase(t *testing.T) {
+	baseURL, teardown := setupTestServer(t, "5055")
+	defer teardown()
+	resp, err := http.Get(baseURL + "/api/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["database"] != "ok" {
+		t.Fatalf("health database = %q, want ok", body["database"])
+	}
+	if body["version"] == "" {
+		t.Fatal("health carries no version")
+	}
+}

@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	kernel "github.com/erancihan/clair/internal/booking"
+	"github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database/models"
 	api_auth "github.com/erancihan/clair/internal/server/authentication"
 	server_context "github.com/erancihan/clair/internal/server/context"
@@ -32,6 +32,12 @@ const (
 	// unauthenticated caller could make the server hold an arbitrary amount.
 	maxWebhookBody = 64 << 10
 )
+
+// paymentProviders names the providers a delivery may come from. The path
+// segment is stored on the payment row, so it has to be one this application
+// actually integrates with rather than whatever the caller typed. The mock
+// provider is the only one today; a real one is a new entry here.
+var paymentProviders = map[string]bool{"mock": true}
 
 // paymentEvent is the provider delivery this domain understands.
 //
@@ -59,8 +65,16 @@ type paymentEvent struct {
 // It answers 200 for a delivery it has already seen. Providers retry until they
 // get a success, and reporting an error for a duplicate would have them retry a
 // capture that has already happened.
-func paymentWebhook(ctx server_context.BackEndContext) http.HandlerFunc {
+func paymentWebhook(ctx server_context.BackEndContext, cache *snapshotCache[[]seatView]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Checked before anything else: an unknown provider is not a route this
+		// application has, whatever the delivery carries.
+		provider := r.PathValue("provider")
+		if !paymentProviders[provider] {
+			http.NotFound(w, r)
+			return
+		}
+
 		secret := []byte(os.Getenv(PaymentWebhookSecretEnv))
 		if len(secret) == 0 {
 			ctx.Logger.Error("payment webhook received with no signing secret configured",
@@ -80,7 +94,7 @@ func paymentWebhook(ctx server_context.BackEndContext) http.HandlerFunc {
 			// distinguished from a malformed one: an attacker probing this
 			// endpoint learns nothing beyond "rejected".
 			ctx.Logger.Warn("rejected payment webhook with invalid signature",
-				zap.String("provider", r.PathValue("provider")))
+				zap.String("provider", provider))
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -110,7 +124,7 @@ func paymentWebhook(ctx server_context.BackEndContext) http.HandlerFunc {
 			kind = "capture"
 		}
 		payment := models.BookingPayment{
-			Provider:       r.PathValue("provider"),
+			Provider:       provider,
 			ProviderRef:    event.ProviderRef,
 			Kind:           kind,
 			Status:         "succeeded",
@@ -119,11 +133,17 @@ func paymentWebhook(ctx server_context.BackEndContext) http.HandlerFunc {
 			IdempotencyKey: event.DeliveryID,
 		}
 
-		if err := kernel.CaptureOrder(conn, event.OrderID, payment, time.Now()); err != nil {
+		if err := booking.CaptureOrder(conn, event.OrderID, payment, time.Now()); err != nil {
 			ctx.Logger.Error("capture order from payment webhook",
 				zap.Uint("order_id", event.OrderID), zap.Error(err))
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
+		}
+
+		// Captured seats are no longer held, and anybody watching that map is
+		// owed the change even if the notification listener is down.
+		for _, eventID := range eventIDsForOrder(conn, event.OrderID) {
+			cache.Bump(eventKey(eventID))
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{

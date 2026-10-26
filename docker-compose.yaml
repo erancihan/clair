@@ -2,33 +2,77 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - 5432:5432
+      - "5432:5432"
     environment:
       POSTGRES_USER: clair
       POSTGRES_PASSWORD: clair
       POSTGRES_DB: clair
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clair -d clair"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - database:/var/lib/postgresql/data
 
   valkey:
     image: valkey/valkey:8
     ports:
-      - 6379:6379
+      - "6379:6379"
+
+  # The schema is a deliberate step, not a side effect of booting. This
+  # one-shot service runs it, and the long-lived services wait for it.
+  migrate:
+    image: ghcr.io/erancihan/clair:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+    command: ["migrate"]
+
+  # Optional: `docker compose --profile seed up seed` fills the Aurenor catalog.
+  seed:
+    image: ghcr.io/erancihan/clair:latest
+    profiles: ["seed"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+    command: ["seed"]
 
   server:
     image: ghcr.io/erancihan/clair:latest
     depends_on:
-      - postgres
-      - valkey
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
     ports:
       - "4000:4000"
     env_file:
       - .env
     environment:
-      - NODE_ENV=production
       - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
       - VALKEY_HOST=valkey
-    command: ./clair.bin server
+    command: ["server"]
+
+  # The hold reaper. Without it an abandoned checkout keeps a seat forever.
+  scheduler:
+    image: ghcr.io/erancihan/clair:latest
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgres://clair:clair@postgres:5432/clair?sslmode=disable
+    command: ["scheduler"]
 
 volumes:
   database:
