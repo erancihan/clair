@@ -29,7 +29,7 @@ func (s *chessService) CreateGame(ctx server_context.BackEndContext) http.Handle
 		instance, id := game.NewGame(game.TypePvP)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"game_id": id,
 			"player":  "white", // Creator is always white in this simple implementation
 			"type":    instance.State.GameType,
@@ -78,7 +78,9 @@ func (s *chessService) StreamGame(ctx server_context.BackEndContext) http.Handle
 					if err != nil {
 						continue
 					}
-					w.Write([]byte("data: " + string(data) + "\n\n"))
+					if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+						return
+					}
 					flusher.Flush()
 				}
 			}

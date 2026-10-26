@@ -6,6 +6,9 @@ on:
       - master
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Go tests (PostgreSQL)
@@ -39,6 +42,9 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      - name: Check go.mod and go.sum are tidy
+        run: go mod tidy -diff
+
       - name: Generate templ views
         run: go generate ./...
 
@@ -48,5 +54,28 @@ jobs:
       - name: Build (CGO-free)
         run: CGO_ENABLED=0 go build ./...
 
-      - name: Test
-        run: make test
+      - name: Test (race)
+        run: go test -race -count=1 ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # The templ output is not committed, so lint needs it generated first.
+      - name: Generate templ views
+        run: go generate ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0

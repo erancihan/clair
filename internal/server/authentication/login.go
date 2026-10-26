@@ -92,7 +92,10 @@ func AuthLogin(ctx server_context.BackEndContext) http.HandlerFunc {
 
 		session.Options = sessionCookieOptions()
 
-		session.Save(r, w)
+		if err := session.Save(r, w); err != nil {
+			http.Error(w, "could not save session", http.StatusInternalServerError)
+			return
+		}
 
 		// Hand anything the visitor accumulated as a guest over to the account
 		// they just signed into. Domains register the migrators; this layer knows

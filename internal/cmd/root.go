@@ -62,12 +62,13 @@ func Execute(ctx context.Context) int {
 			if perr != nil {
 				return perr
 			}
-			defer f.Close()
-
 			runtime.GC()
 
-			err := pprof.WriteHeapProfile(f)
-			return err
+			if err := pprof.WriteHeapProfile(f); err != nil {
+				_ = f.Close()
+				return err
+			}
+			return f.Close()
 		},
 	}
 

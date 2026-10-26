@@ -21,6 +21,8 @@ func AuthLogout(ctx server_context.BackEndContext) http.HandlerFunc {
 		session.Options = sessionCookieOptions()
 		session.Options.MaxAge = -1
 
-		session.Save(r, w)
+		if err := session.Save(r, w); err != nil {
+			http.Error(w, "could not save session", http.StatusInternalServerError)
+		}
 	}
 }

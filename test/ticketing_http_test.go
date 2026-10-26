@@ -23,7 +23,9 @@ func getEventTiers(t *testing.T, c *http.Client, ts, slug string) []tierResp {
 	var body struct {
 		Tiers []tierResp `json:"tiers"`
 	}
-	json.NewDecoder(resp.Body).Decode(&body)
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
 	resp.Body.Close()
 	return body.Tiers
 }
@@ -55,7 +57,9 @@ func TestTicketingHTTP_GA(t *testing.T) {
 			ID uint `json:"id"`
 		} `json:"order"`
 	}
-	json.NewDecoder(resp.Body).Decode(&held)
+	if err := json.NewDecoder(resp.Body).Decode(&held); err != nil {
+		t.Fatalf("decode held: %v", err)
+	}
 	resp.Body.Close()
 
 	if r := getEventTiers(t, host, ts.URL, "concert")[0].Remaining; r != 1 {
@@ -92,7 +96,9 @@ func seatMap(t *testing.T, c *http.Client, ts, slug string) []struct {
 		Label string `json:"label"`
 		State string `json:"state"`
 	}
-	json.NewDecoder(resp.Body).Decode(&seats)
+	if err := json.NewDecoder(resp.Body).Decode(&seats); err != nil {
+		t.Fatalf("decode seats: %v", err)
+	}
 	resp.Body.Close()
 	return seats
 }
@@ -137,7 +143,9 @@ func TestTicketingHTTP_Seated(t *testing.T) {
 			ID uint `json:"id"`
 		} `json:"order"`
 	}
-	json.NewDecoder(resp.Body).Decode(&held)
+	if err := json.NewDecoder(resp.Body).Decode(&held); err != nil {
+		t.Fatalf("decode held: %v", err)
+	}
 	resp.Body.Close()
 
 	// Guest 2 wants A-2 + A-3 → all-or-nothing conflict (A-2 taken); A-3 stays free.
@@ -237,7 +245,9 @@ func TestTicketingHTTP_WaitlistClaim(t *testing.T) {
 	var wl struct {
 		Position int `json:"position"`
 	}
-	json.NewDecoder(resp.Body).Decode(&wl)
+	if err := json.NewDecoder(resp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode wl: %v", err)
+	}
 	resp.Body.Close()
 	if wl.Position != 1 {
 		t.Fatalf("waitlist position=%d, want 1", wl.Position)
@@ -260,7 +270,9 @@ func TestTicketingHTTP_WaitlistClaim(t *testing.T) {
 			ID uint `json:"id"`
 		} `json:"order"`
 	}
-	json.NewDecoder(resp.Body).Decode(&claimed)
+	if err := json.NewDecoder(resp.Body).Decode(&claimed); err != nil {
+		t.Fatalf("decode claimed: %v", err)
+	}
 	resp.Body.Close()
 
 	resp = capturePayment(t, ts, claimed.Order.ID, "wl-http-1")
