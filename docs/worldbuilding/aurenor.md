@@ -49,7 +49,7 @@ specs under `docs/superpowers/` are history; each carries a status banner.
 
 - **A1. Engine hardening** *(done)* — lock the release path, put the capacity predicate on commit, scope the refund lookup, owner-check waitlist claims, cap GA holds, refuse holds on past showings, read every `RowsAffected`.
 - **A2. Live layer resilience** *(done)* — resync streams after a LISTEN drop, never cache a failed load, stream the GA showing and the empty board, survive a network blip, keep the buyer's hold across reload, one window for strip and stream.
-- **A3. Operator path and hardening** — `make build/migrate/seed/run` agree on one binary, Docker entrypoint, compose runs migrate + scheduler, non-zero exit on a bad database, SSE-aware shutdown, real 404s, server timeouts, rate limits, DB-aware health. *(code complete; Postgres test run pending)*
+- **A3. Operator path and hardening** *(done)* — `make build/migrate/seed/run` agree on one binary, Docker entrypoint, compose runs migrate + scheduler, non-zero exit on a bad database, SSE-aware shutdown, real 404s, server timeouts, rate limits, DB-aware health.
 - **A4. CI and quality gates** — `go test -race ./...`, `go mod tidy -diff`, golangci-lint, PR-triggered image build.
 - **A5. Docs consolidation** — status banners, archive executed plans, commit `docs/`.
 

@@ -1,10 +1,10 @@
-# Hand-off — 2026-10-20
+# Hand-off — shop-front rebase
 
-Work moved to another machine. This file is the state at the hand-off and the first things to do there. Delete it once the steps below are done.
+Booking (`feat/booking-systems`) finished roadmap phases A1–A3 and the Postgres-backed test run on 2026-10-21. This file keeps only what is still open: the rebase of the shop-front branch after booking merges to `master`. After that rebase is done, delete this file.
 
-## Two lines of work
+## Branches
 
-| | Booking (this branch) | Shop front |
+| | Booking | Shop front |
 |---|---|---|
 | Branch | `feat/booking-systems` | `docs/shop-front-plan` |
 | Was at | main checkout | worktree `../temp/clair-shopfront` |
@@ -13,40 +13,13 @@ Work moved to another machine. This file is the state at the hand-off and the fi
 
 Both branches were committed as checkpoints at hand-off. Clean the history up when you open the PRs.
 
-## Booking: where it stands
-
-- Roadmap v2 phases A1 and A2 are done (`docs/superpowers/specs/2026-09-02-evaluation-and-roadmap-v2.md`).
-- A3 (`docs/superpowers/plans/2026-09-02-a3-operator-path-and-hardening.md`) is code complete. Its banner lists what was verified and how the work differs from the plan.
-- **No test that needs Postgres has run against Tasks 4–8.** The machine that finished them had no Docker. Build, vet, `go test -race` on every package that does not need a database, and a route-table smoke test all passed.
-
-### First steps on the new machine
-
-```sh
-cp .env.example .env            # then fill SESSION_KEY, BOOKING_PAYMENT_WEBHOOK_SECRET
-go mod vendor                   # vendor/ is gitignored; the Makefile builds with -mod vendor
-docker compose -f docker-compose.dev.yaml up -d postgres
-export $(grep -E '^DATABASE_URL=' .env | xargs)
-go generate ./... && go build ./... && go vet ./... && go test -race -count=1 ./...
-```
-
-Then finish A3 Task 9 (Steps 1, 3, 4, 5) and fix anything red. These are the tests most likely to need work, because they were written without a database to run them:
-
-- `test/server_lifecycle_test.go` (`TestShutdownEndsOpenStreams`)
-- `test/ratelimit_http_test.go`
-- `TestHealthReportsTheDatabase`, `TestPaymentWebhookRefusesUnknownProvider`, `TestCreateScheduleDuplicateSlugIs409AndOtherErrorsAreNot`
-- the changed `TestMountedRoutes` (404 row), `TestAuthentication` (`/appointments/me`), `TestUsersEndpoint…` (exact path) and the three cancel-by-token call sites
-
-If an existing HTTP test trips the guest rate limit (burst 20), raise the default in `internal/server/routes/booking.go`. Do not change the test.
-
-After A3: A4 (CI gates), then A5 (docs consolidation). Both are in the roadmap.
-
 ## Shop front: where it stands
 
 - `docs/shop-plan.md` is revised against `master` (the uncommitted revision is now a commit).
 - Phase 0 ("seams") is written but has not been verified with a database: `internal/server/shop/{api.go,api_http.go,models.go}`, `internal/server/routes/shop.go`, `internal/web/pages/shop_storefront.templ`, `test/shop_mount_test.go`, and one-line additions to `server.go`, `database.go`, `nav.go`.
 - Locked decision: the shop has its own `shop_*` tables for orders, stock and payment. It does not use the booking engine.
 
-### Merge order
+## Merge order
 
 Land booking first. `master` does not build at `a1b3215` (`internal/cmd/scheduler.go` calls the deleted `clair.NewEventLoop`), and `clair migrate` is not registered. The booking branch fixes both.
 
