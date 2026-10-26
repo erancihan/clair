@@ -56,6 +56,7 @@ templ aurenorScript() {
 
 		window.AURENOR_HOLDS_KEY = 'aurenor_theater_holds';
 		window.AURENOR_HOLDS_EVENT = 'aurenor-holds-changed';
+		window.AURENOR_ORDERS_EVENT = 'aurenor-orders-changed';
 
 		window.aurenorHolds = window.aurenorHolds || function () {
 			let list;
@@ -92,6 +93,60 @@ templ aurenorScript() {
 		document.addEventListener('alpine:init', () => {
 			if (Alpine.__aurenorHolds) return;
 			Alpine.__aurenorHolds = true;
+
+			// What this browser has bought. Read from the server, which knows the
+			// browser by its owner reference; refreshed when a checkout or a
+			// cancel on this page says something changed.
+			Alpine.data('theaterTickets', () => ({
+				orders: [],
+				cancelling: 0,
+				error: '',
+
+				init() {
+					this.load();
+					window.addEventListener(window.AURENOR_ORDERS_EVENT, () => this.load());
+				},
+
+				async load() {
+					try {
+						const res = await fetch('/events/orders');
+						if (res.ok) this.orders = (await res.json()) || [];
+					} catch (e) {
+						// The panel stays as it was; the tickets are still on the server.
+					}
+				},
+
+				ticketSummary(order) {
+					const seats = order.tickets.filter(t => t.seat).map(t => t.seat);
+					if (seats.length) return seats.join(', ');
+					return order.tickets.length + (order.tickets.length === 1 ? ' ticket' : ' tickets');
+				},
+
+				cancellable(order) {
+					return order.status === 'paid' && Date.parse(order.start_at) > Date.now();
+				},
+
+				async cancel(order) {
+					this.cancelling = order.id;
+					this.error = '';
+					try {
+						const res = await fetch('/events/orders/' + order.id + '/cancel', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+						});
+						if (!res.ok) {
+							this.error = res.status === 409
+								? 'That showing has started, so its tickets can no longer be cancelled.'
+								: 'Could not cancel that order. Reload the page and try again.';
+						}
+					} catch (e) {
+						this.error = 'Could not reach the box office.';
+					} finally {
+						this.cancelling = 0;
+						window.dispatchEvent(new CustomEvent(window.AURENOR_ORDERS_EVENT));
+					}
+				},
+			}));
 
 			Alpine.data('theaterHolds', () => ({
 				mine: [],

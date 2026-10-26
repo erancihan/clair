@@ -58,6 +58,9 @@ templ showingScript() {
 				guestName: '',
 				guestEmail: '',
 				copied: false,
+				paying: false,
+				paid: null,
+				paidPartial: false,
 
 				async init() {
 					await this.loadEvent();
@@ -87,6 +90,8 @@ templ showingScript() {
 					const mine = window.aurenorHolds().find(h => h.slug === this.slug);
 					if (!mine) return;
 					this.hold = mine;
+					if (mine.guestName) this.guestName = mine.guestName;
+					if (mine.guestEmail) this.guestEmail = mine.guestEmail;
 					this.startCountdown();
 				},
 
@@ -481,6 +486,8 @@ templ showingScript() {
 								currency: this.currency,
 								tokens: seated ? (data.hold_tokens || []) : [data.hold_token],
 								expiresAt: data.expires_at,
+								guestName: this.guestName,
+								guestEmail: this.guestEmail,
 							};
 							aurenorRememberHold(this.hold);
 							this.selected = [];
@@ -539,6 +546,68 @@ templ showingScript() {
 					await this.loadEvent();
 					if (this.kind === 'seated') await this.loadSeats({ quiet: true });
 					this.notice = 'Released. Those seats are back on sale.';
+				},
+
+				// Pays for every hold this browser has on the showing. The server
+				// charges the simulated provider and issues the tickets in the same
+				// request; there is nothing to wait for.
+				async pay() {
+					if (!this.hold || this.paying) return;
+					if (!this.guestName.trim()) {
+						this.nameError = 'Please add a name for the tickets.';
+						this.$nextTick(() => {
+							const field = document.getElementById('checkout-name');
+							if (field) field.focus();
+						});
+						return;
+					}
+					this.paying = true;
+					this.error = '';
+					this.nameError = '';
+					try {
+						const res = await fetch('/events/' + encodeURIComponent(this.slug) + '/checkout', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': aurenorCSRF() },
+							body: JSON.stringify({ guest_name: this.guestName, guest_email: this.guestEmail }),
+						});
+						if (res.status === 201) {
+							const data = await res.json();
+							aurenorForgetHold(this.hold.key);
+							this.hold = null;
+							this.stopCountdown();
+							this.paid = data.orders || [];
+							this.paidPartial = !!data.partial;
+							window.dispatchEvent(new CustomEvent(window.AURENOR_ORDERS_EVENT));
+							this.$nextTick(() => {
+								const panel = document.getElementById('showing-paid');
+								if (panel) panel.focus();
+							});
+							await this.loadEvent();
+							if (this.kind === 'seated') await this.loadSeats({ quiet: true });
+							return;
+						}
+						if (res.status === 409) {
+							// The hold is gone one way or another; the picker comes back.
+							aurenorForgetHold(this.hold.key);
+							this.hold = null;
+							this.stopCountdown();
+							this.error = 'Your hold ran out before payment went through. You were not charged.';
+							await this.loadEvent();
+							if (this.kind === 'seated') await this.loadSeats({ quiet: true });
+							return;
+						}
+						this.error = res.status === 403
+							? 'This page went stale. Reload it and try again.'
+							: 'Payment did not go through. Try again.';
+					} catch (e) {
+						this.error = 'Could not reach the box office. Check your connection and try again.';
+					} finally {
+						this.paying = false;
+					}
+				},
+
+				get paidTickets() {
+					return (this.paid || []).flatMap(o => o.tickets || []);
 				},
 
 				async copyTokens() {

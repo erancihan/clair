@@ -85,7 +85,7 @@ func TestAurenorServiceScreensBindTheirSchedule(t *testing.T) {
 }
 
 // TestWiredAurenorPagesDropThePreviewBadge pins the badge to what is actually
-// mock: the appointment pages are live, the theater is not.
+// mock. Every Aurenor page is wired now, so none of them carries it.
 func TestWiredAurenorPagesDropThePreviewBadge(t *testing.T) {
 	srv := newRoutesServer(t)
 	client := &http.Client{
@@ -102,7 +102,9 @@ func TestWiredAurenorPagesDropThePreviewBadge(t *testing.T) {
 		{path: "/aurenor/hospitals/solvarre-general", wantBadge: false},
 		{path: "/aurenor/consulate", wantBadge: false},
 		{path: "/aurenor/bureau", wantBadge: false},
-		{path: "/aurenor/theaters/grand", wantBadge: true},
+		// The theater sells for real since B2; its badge now says the payment
+		// is simulated rather than that the page is a preview.
+		{path: "/aurenor/theaters/grand", wantBadge: false},
 	}
 
 	for _, tc := range tests {

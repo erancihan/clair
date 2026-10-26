@@ -127,6 +127,9 @@ func (a *API) JoinWaitlistGA() http.HandlerFunc {
 }
 func (a *API) JoinWaitlistSeat() http.HandlerFunc { return joinWaitlistSeat(a.ctx) }
 func (a *API) ClaimOffer() http.HandlerFunc       { return claimOffer(a.ctx, a.seats) }
+func (a *API) Checkout() http.HandlerFunc         { return checkout(a.ctx, a.seats) }
+func (a *API) MyOrders() http.HandlerFunc         { return myOrders(a.ctx) }
+func (a *API) CancelOrder() http.HandlerFunc      { return cancelOrder(a.ctx, a.seats) }
 
 // ---- machine: the payment provider ----
 

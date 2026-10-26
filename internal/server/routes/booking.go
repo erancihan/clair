@@ -170,6 +170,12 @@ func mountEvents(r *router.Router, api *booking.API, ctx server_context.BackEndC
 		// The same board, pushed as its showings change.
 		events.Middleware(limits.streams).HandleFunc("GET /summary/stream", api.EventSummaryStream())
 
+		// The caller's own ticket orders. A guest read, like the board: the
+		// owner reference is per browser, so it needs no account. Literal, and
+		// so registered ahead of the {slug} wildcard for the same reason as
+		// "summary".
+		events.Middleware(limits.guest).HandleFunc("GET /orders", api.MyOrders())
+
 		events.HandleFunc("GET /{slug}", api.GetEvent())
 		events.HandleFunc("GET /{slug}/seats", api.SeatMap())
 
@@ -189,6 +195,12 @@ func mountEvents(r *router.Router, api *booking.API, ctx server_context.BackEndC
 			guest.HandleFunc("POST /{slug}/tiers/{tierID}/waitlist", api.JoinWaitlistGA())
 			guest.HandleFunc("POST /{slug}/seats/{seatID}/waitlist", api.JoinWaitlistSeat())
 			guest.HandleFunc("POST /{slug}/waitlist/claim", api.ClaimOffer())
+
+			// Paying for what is held, and undoing a paid order. Guest-allowed for
+			// the same reason holding is: the buyer usually has no account, and
+			// the owner reference is what both are checked against.
+			guest.HandleFunc("POST /{slug}/checkout", api.Checkout())
+			guest.HandleFunc("POST /orders/{id}/cancel", api.CancelOrder())
 		}, limits.guest, api_auth.CSRF())
 	})
 }

@@ -15,7 +15,7 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 ## Phase B. Complete the loop
 
 - B1. Rolling calendar. *(done 2026-10-26)* Event slugs carry the date (`grand-dune-part-two-20261027-1900`). Each film time plays once a week, and `aurenor.ExtendCalendar`, run hourly by `clair scheduler`, keeps a 14-day window of showings created. The catalog is the single source for service names and blurbs. The catalog test asserts 16 schedules, 84 rules and 17 weekly showtimes exactly.
-- B2. Theater checkout and cancel. Findings K6, K7. A mock-payment checkout that captures a hold into a paid order with issued tickets, `CancelOrder` and `RefundOrder` in the booking service, a my-tickets panel. Prerequisite for simulator churn.
+- B2. Theater checkout and cancel. *(done 2026-10-26)* `CaptureOrder` records the payment in its own transaction and refunds an order it cannot fill. `CancelOrder` and `RefundOrder` in the booking service release units to the waitlist and refund. A mock-payment checkout (`POST /events/{slug}/checkout`) pays every live hold on a showing and issues tickets. A my-tickets panel on the theater and showing pages lists orders and cancels them until the showing starts.
 - B3. Retention. `PurgeOldBookingData(db, now)` deleting by business time (`event.start_at`, `slot.end_at`), status-guarded on money rows, batched, with supporting indexes. A gated daily scheduler job. Never touches seeded schedules, rules, tiers or seats.
 - B4. Simulator. Findings K20, K22. Package `internal/simulator`. Demand-curve fill through in-process domain calls that converges toward a target occupancy per showing or slot, with churn from B2's cancel path and abandoned holds. `sim:` owner-ref namespace, production DSN guard, advisory-lock single runner, wired into `clair scheduler` behind `SIM_ENABLED`.
 
@@ -30,8 +30,6 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 
 | Id | Where | Kind | Finding | Fix | Step |
 |---|---|---|---|---|---|
-| K6 | `booking/hold.go` `CaptureOrder` | gap | A hold that lapses between checkout and the webhook makes `CaptureOrder` fail and roll back the payment row too. No void or refund path exists outside `CancelByToken`. | Record the payment in its own transaction. Add `RefundOrder` to the service. | B2 |
-| K7 | `booking/inventory.go` `Cancel` | gap | `booking.Cancel` has one caller, in appointments. Nothing decrements `booked` for a tier or seat inventory, so a captured sale is irreversible. | Add `CancelOrder(db, orderID, now)` that releases each item's units and drives the refund. | B2 |
 | K20 | `appointments/book.go` `CancelByToken` | smell | Calls `time.Now()` internally. Every other entry point takes `now`. | Add the parameter. | B4 |
 | K22 | `server/booking/api_availability.go` | smell | The "load rules, exceptions and booked counts" preamble is duplicated between `availability()` and `availabilityViews()`. | Move it into `appointments.OpenSlotsFor`. | B4 |
 | W7 | `pages/aurenor_showing_script.templ` | bug | `seatLimit` returns `Math.max(1, ...)`, so a sold-out GA showing renders an enabled Hold button that always answers 409. | Branch on `remaining === 0`. Add a sold-out panel. | C1 |

@@ -39,11 +39,16 @@ templ AurenorShowing(v Venue, s aurenor.Showing) {
 					<p x-show="loadError" x-cloak role="alert"
 						class="mt-6 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300" x-text="loadError"></p>
 
-					<div x-show="!hold && !loadError" class="mt-8">
+					<div x-show="!hold && !paid && !loadError" class="mt-8">
 						@showingPicker(s)
 					</div>
 
 					@showingReceipt()
+					@showingTickets()
+
+					<div class="mt-10">
+						@myTheaterTickets()
+					</div>
 				</div>
 			</div>
 		</div>
@@ -190,7 +195,7 @@ templ showingBuyerBar() {
 				class="inline-flex items-center rounded-full bg-teal-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
 				x-text="holding ? 'Holding…' : (holdCount === 1 ? 'Hold 1 seat' : 'Hold ' + holdCount + ' seats')">Hold</button>
 		</div>
-		<p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Held for 10 minutes. Nothing is charged.</p>
+		<p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Held for 10 minutes while you pay.</p>
 	</div>
 }
 
@@ -213,9 +218,20 @@ templ showingReceipt() {
 			These seats are about to go back on sale.
 		</p>
 
-		<p class="mt-4 text-xs text-teal-800/70 dark:text-teal-200/60">
-			Checkout is not wired in this simulation, so the hold lapses instead of becoming a ticket. Nothing is charged.
-		</p>
+		<div class="mt-5 rounded-2xl bg-white/70 p-4 dark:bg-zinc-800/60">
+			<label class="block text-xs font-medium text-teal-900 dark:text-teal-100" for="checkout-name">Name on the tickets</label>
+			<input id="checkout-name" x-model="guestName" type="text" placeholder="Your name (required)"
+				:aria-invalid="nameError !== ''"
+				class="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"/>
+			<p x-show="nameError" x-cloak role="alert" class="mt-1 text-xs text-red-600 dark:text-red-400" x-text="nameError"></p>
+			<p x-show="error" x-cloak role="alert" class="mt-2 text-sm text-red-700 dark:text-red-300" x-text="error"></p>
+			<button type="button" @click="pay()" :disabled="paying"
+				class="mt-3 inline-flex items-center rounded-full bg-teal-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
+				x-text="paying ? 'Paying…' : 'Pay ' + money(hold ? hold.totalCents : 0)">Pay</button>
+			<p class="mt-2 text-xs text-teal-800/70 dark:text-teal-200/60">
+				Payment is simulated: no card is asked for and no money moves.
+			</p>
+		</div>
 
 		<div class="mt-4">
 			<p class="text-xs font-medium uppercase tracking-wide text-teal-800/60 dark:text-teal-200/50">Reference</p>
@@ -237,5 +253,31 @@ templ showingReceipt() {
 				Back to showtimes
 			</a>
 		</div>
+	</div>
+}
+
+// showingTickets is what the buyer sees once they have paid: the tickets the
+// order issued, and where to find them again.
+templ showingTickets() {
+	<div x-show="paid" x-cloak tabindex="-1" id="showing-paid" role="status"
+		class="mt-8 rounded-3xl bg-teal-50 p-6 dark:bg-teal-400/10">
+		<h2 class="text-lg font-semibold text-teal-900 dark:text-teal-100">You're booked</h2>
+		<p class="mt-1 text-sm text-teal-800/80 dark:text-teal-200/70" x-show="paidPartial" x-cloak>
+			Part of your hold ran out before payment. You were not charged for it.
+		</p>
+		<ul class="mt-4 space-y-2">
+			<template x-for="ticket in paidTickets" :key="ticket.code">
+				<li class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/70 px-4 py-2 text-sm dark:bg-zinc-800/60">
+					<span class="font-medium text-teal-900 dark:text-teal-100" x-text="ticket.seat || ticket.tier"></span>
+					<code class="font-mono text-xs text-teal-900/70 dark:text-teal-100/60" x-text="ticket.code"></code>
+				</li>
+			</template>
+		</ul>
+		<p class="mt-4 text-xs text-teal-800/70 dark:text-teal-200/60">
+			Your tickets are listed under My tickets on every theater page, in this browser.
+		</p>
+		<a :href="backHref" class="mt-4 inline-block text-sm text-teal-800/70 underline transition hover:text-teal-900 dark:text-teal-200/60">
+			Back to showtimes
+		</a>
 	</div>
 }

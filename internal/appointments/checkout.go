@@ -100,6 +100,16 @@ func (slotFulfiller) Fulfill(tx *gorm.DB, order models.BookingOrder, item models
 	return appt.ID, nil
 }
 
+// Revoke cancels the appointment a paid slot order created.
+func (slotFulfiller) Revoke(tx *gorm.DB, item models.BookingOrderItem, inv models.BookingInventory) error {
+	if item.FulfilledID == nil {
+		return nil
+	}
+	return tx.Model(&models.BookingAppointment{}).
+		Where("id = ? AND status = 'confirmed'", *item.FulfilledID).
+		Update("status", "cancelled").Error
+}
+
 func init() {
 	// Register the appointment fulfiller so payment capture can create the
 	// confirmed appointment for a slot-owned inventory.

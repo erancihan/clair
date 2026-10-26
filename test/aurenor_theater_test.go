@@ -81,9 +81,12 @@ func TestTheaterPageIsLive(t *testing.T) {
 	if strings.Contains(body, "10:45") {
 		t.Error("theater page still renders hardcoded mock showtimes")
 	}
-	// Checkout is genuinely not wired, so the page must still say so.
-	if !strings.Contains(body, "Preview ·") {
-		t.Error("theater page drops the notice that checkout is not wired")
+	// The payment behind checkout is simulated, and the page has to say so.
+	if !strings.Contains(body, "payment is mocked") {
+		t.Error("theater page drops the notice that payment is simulated")
+	}
+	if !strings.Contains(body, `x-data="theaterTickets"`) {
+		t.Error("theater page renders no my-tickets panel")
 	}
 }
 
