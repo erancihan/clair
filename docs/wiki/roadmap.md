@@ -14,7 +14,7 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 
 ## Phase B. Complete the loop
 
-- B1. Rolling calendar. Findings O11, O12, O13. Date-bearing event slugs, a scheduler job that keeps a 14-day window of showings, catalog as the single source for service names and blurbs.
+- B1. Rolling calendar. *(done 2026-10-26)* Event slugs carry the date (`grand-dune-part-two-20261027-1900`). Each film time plays once a week, and `aurenor.ExtendCalendar`, run hourly by `clair scheduler`, keeps a 14-day window of showings created. The catalog is the single source for service names and blurbs. The catalog test asserts 16 schedules, 84 rules and 17 weekly showtimes exactly.
 - B2. Theater checkout and cancel. Findings K6, K7. A mock-payment checkout that captures a hold into a paid order with issued tickets, `CancelOrder` and `RefundOrder` in the booking service, a my-tickets panel. Prerequisite for simulator churn.
 - B3. Retention. `PurgeOldBookingData(db, now)` deleting by business time (`event.start_at`, `slot.end_at`), status-guarded on money rows, batched, with supporting indexes. A gated daily scheduler job. Never touches seeded schedules, rules, tiers or seats.
 - B4. Simulator. Findings K20, K22. Package `internal/simulator`. Demand-curve fill through in-process domain calls that converges toward a target occupancy per showing or slot, with churn from B2's cancel path and abandoned holds. `sim:` owner-ref namespace, production DSN guard, advisory-lock single runner, wired into `clair scheduler` behind `SIM_ENABLED`.
@@ -47,9 +47,6 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 | W17 | `pages/aurenor_theater_live.templ` | dead, ux | The "No showings on <day>" panel and `nextDayWithShowings` are unreachable. An empty board renders as a red `role="alert"`. | Delete the dead branch. Add a neutral empty state. | C1 |
 | W18 | `components/header.templ` | dead, bug | `NavItem`'s active branch is unreachable. `max-w-9xl` and `lg:max-w-12xl` do not exist in Tailwind. | Delete. Compute active from path. Use `max-w-7xl`. | C1 |
 | W20 | `routes/booking.go`, `components/nav.go` | ux | `/aurenor` answers 404 and no nav entry exists. A deep-linked visitor has no route back. | Mount an `/aurenor` index that lists the four systems. | C1 |
-| O11 | `internal/aurenor/seed.go`, `catalog.go` | bug | Event slugs are `theater-film-HHMM` with no date, and `startAt` is `now + DayOffset` with `DayOffset` in 1 to 7. Re-runs skip all 17 by slug. Eight days after a seed, 0 of 17 showings are in the future. | Date-bearing slugs plus a scheduled job that keeps an N-day window. | B1 |
-| O12 | `internal/aurenor/catalog.go`, `pages/aurenor_helpers.go` | smell | The twelve service names are typed twice: catalog bare, page with blurbs. | Move blurbs into the catalog. Assert both directions. | B1 |
-| O13 | `internal/aurenor/catalog_test.go` | gap | Only "16 schedules" is asserted. The 84 rules and 17 events are checked by `len != 0`. | Assert all three. | B1 |
 
 ## Decisions that stand
 

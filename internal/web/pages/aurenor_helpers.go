@@ -2,6 +2,7 @@ package pages
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/erancihan/clair/internal/aurenor"
 )
@@ -21,37 +22,24 @@ type apptCard struct {
 // hospitalDepartments are the departments every hospital offers, each booking
 // that hospital's own inventory — two hospitals never share a waiting list.
 func hospitalDepartments(v Venue) []apptCard {
-	return []apptCard{
-		venueCard(v, "Cardiology", "Consultations with the heart & vascular team."),
-		venueCard(v, "Pediatrics", "Well-child visits and same-week sick slots."),
-		venueCard(v, "General Practice", "Routine check-ups and referrals."),
-		venueCard(v, "Dermatology", "Skin, hair and nail consultations."),
-	}
+	return cardsFor(v.Slug, aurenor.HospitalDepartments())
 }
 
 // aurenorConsulateServices and aurenorBureauServices are the two single-body
 // institutions' catalogs. They have no Venue, so their slugs carry a fixed
 // institution prefix instead.
-var aurenorConsulateServices = []apptCard{
-	prefixedCard(aurenor.ConsulatePrefix, "Tourist Visa Interview", "Short-stay visitor visa appointment."),
-	prefixedCard(aurenor.ConsulatePrefix, "Work Visa Appointment", "Employment authorization interview."),
-	prefixedCard(aurenor.ConsulatePrefix, "Student Visa", "Study permit application appointment."),
-	prefixedCard(aurenor.ConsulatePrefix, "Residence Permit Renewal", "Renew a long-stay residence permit."),
-}
+var aurenorConsulateServices = cardsFor(aurenor.ConsulatePrefix, aurenor.ConsulateServices())
 
-var aurenorBureauServices = []apptCard{
-	prefixedCard(aurenor.BureauPrefix, "Driver's Licence Renewal", "Renew or replace a driver's licence."),
-	prefixedCard(aurenor.BureauPrefix, "ID Card Renewal", "Renew a national identity card."),
-	prefixedCard(aurenor.BureauPrefix, "Fingerprint Appointment", "Biometric capture for records requests."),
-	prefixedCard(aurenor.BureauPrefix, "Address Registration", "Register or update a residential address."),
-}
+var aurenorBureauServices = cardsFor(aurenor.BureauPrefix, aurenor.BureauServices())
 
-func venueCard(v Venue, title, blurb string) apptCard {
-	return prefixedCard(v.Slug, title, blurb)
-}
-
-func prefixedCard(prefix, title, blurb string) apptCard {
-	return apptCard{Title: title, Blurb: blurb, ScheduleSlug: prefix + "-" + aurenor.Slugify(title)}
+// cardsFor turns catalog services into cards under one slug prefix. Names and
+// blurbs both come from the catalog, so the pages never spell a service.
+func cardsFor(prefix string, services []aurenor.Service) []apptCard {
+	out := make([]apptCard, len(services))
+	for i, svc := range services {
+		out[i] = apptCard{Title: svc.Name, Blurb: svc.Blurb, ScheduleSlug: prefix + "-" + aurenor.Slugify(svc.Name)}
+	}
+	return out
 }
 
 // ServiceCard is one bookable service on its own screen: which institution it
@@ -153,9 +141,9 @@ func AppointmentScheduleSlugs() []string {
 //
 // The catalog is the source of the slug list because there is no endpoint that
 // lists an event collection; the component fetches each showing by slug from
-// here.
+// here. The list is the calendar window as of this render.
 func theaterAttr(v Venue) string {
-	showings, _ := json.Marshal(aurenor.TheaterShowings(v.Slug))
+	showings, _ := json.Marshal(aurenor.TheaterShowings(v.Slug, time.Now()))
 	return "theater(" + string(showings) + ")"
 }
 

@@ -34,9 +34,19 @@ func TestAurenorScheduleSlugsAreSeeded(t *testing.T) {
 		t.Fatal("no schedule slugs rendered by the Aurenor pages")
 	}
 
+	renderedSet := map[string]bool{}
 	for _, slug := range rendered {
+		renderedSet[slug] = true
 		if !seeded[slug] {
 			t.Errorf("page renders schedule slug %q, which the seeder never creates", slug)
+		}
+	}
+
+	// And the other way: a seeded schedule no page offers is a service nobody
+	// can reach.
+	for slug := range seeded {
+		if !renderedSet[slug] {
+			t.Errorf("schedule %q is seeded but no page renders it", slug)
 		}
 	}
 }

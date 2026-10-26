@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/erancihan/clair/internal/aurenor"
 	"github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database"
 	"github.com/erancihan/clair/internal/utils"
@@ -47,6 +48,21 @@ func SchedulerCmd(ctx context.Context) *cobra.Command {
 				}
 				if released > 0 {
 					logger.Info("released expired holds", zap.Int("count", released))
+				}
+			}); err != nil {
+				return err
+			}
+
+			// The theater calendar rolls: every hour, create the showings that have
+			// come into the window. The first run is immediate, so a scheduler
+			// started on a stale database fills the board without waiting.
+			if _, err := scheduler.Every(1).Hour().SingletonMode().Do(func() {
+				created, err := aurenor.ExtendCalendar(db, time.Now())
+				if err != nil {
+					logger.Error("extend theater calendar", zap.Error(err))
+				}
+				if created > 0 {
+					logger.Info("created showings", zap.Int("count", created))
 				}
 			}); err != nil {
 				return err

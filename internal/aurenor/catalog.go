@@ -8,6 +8,7 @@ package aurenor
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -23,6 +24,9 @@ const (
 	// two single-body institutions (they have no Venue catalog entry).
 	ConsulatePrefix = "consulate"
 	BureauPrefix    = "bureau"
+	// WindowDays is how far ahead the theater calendar runs. The seed and the
+	// scheduler's calendar job both keep every showing in it created.
+	WindowDays = 14
 )
 
 // RuleDef is one recurring weekly availability window. Weekday 0=Sunday..6=Sat;
@@ -34,7 +38,7 @@ type RuleDef struct{ Weekday, StartMin, EndMin int }
 type ScheduleDef struct {
 	Slug, Name, Description                            string
 	SlotDurationMin, Capacity, LeadTimeMin, WindowDays int
-	Rules                                             []RuleDef
+	Rules                                              []RuleDef
 }
 
 // TierDef is a ticket tier to seed under an event. Kind is "ga" (Capacity is the
@@ -46,12 +50,12 @@ type TierDef struct {
 	Rows, Cols          int
 }
 
-// EventDef is one showing (a film at a specific time). Inventory is per-event.
+// EventDef is one showing: a film at one theater on one date and time.
+// Inventory is per event.
 type EventDef struct {
-	Slug, Name, Salon string
-	DayOffset         int // StartAt = now + DayOffset days at Hour:Minute in TZ
-	Hour, Minute      int
-	Tier              TierDef
+	Slug, Theater, Name, Salon string
+	StartAt                    time.Time
+	Tier                       TierDef
 }
 
 // venue pairs a catalog slug with its display name. Duplicated from the web
@@ -69,11 +73,37 @@ var theaterVenues = []venue{
 	{"harborlight", "Harborlight Cinema"},
 }
 
-// Department / service names match the mock apptCard titles verbatim, so Step 2
-// can map a card title to its schedule slug with Slugify.
-var hospitalDepartments = []string{"Cardiology", "Pediatrics", "General Practice", "Dermatology"}
-var consulateServices = []string{"Tourist Visa Interview", "Work Visa Appointment", "Student Visa", "Residence Permit Renewal"}
-var bureauServices = []string{"Driver's Licence Renewal", "ID Card Renewal", "Fingerprint Appointment", "Address Registration"}
+// Service is one bookable service: the name a card shows and the line under
+// it. The pages read these lists rather than keeping their own, so a service
+// is named in exactly one place.
+type Service struct{ Name, Blurb string }
+
+var hospitalDepartments = []Service{
+	{"Cardiology", "Consultations with the heart & vascular team."},
+	{"Pediatrics", "Well-child visits and same-week sick slots."},
+	{"General Practice", "Routine check-ups and referrals."},
+	{"Dermatology", "Skin, hair and nail consultations."},
+}
+
+var consulateServices = []Service{
+	{"Tourist Visa Interview", "Short-stay visitor visa appointment."},
+	{"Work Visa Appointment", "Employment authorization interview."},
+	{"Student Visa", "Study permit application appointment."},
+	{"Residence Permit Renewal", "Renew a long-stay residence permit."},
+}
+
+var bureauServices = []Service{
+	{"Driver's Licence Renewal", "Renew or replace a driver's licence."},
+	{"ID Card Renewal", "Renew a national identity card."},
+	{"Fingerprint Appointment", "Biometric capture for records requests."},
+	{"Address Registration", "Register or update a residential address."},
+}
+
+// HospitalDepartments, ConsulateServices and BureauServices return copies, so
+// a caller cannot edit the catalog.
+func HospitalDepartments() []Service { return slices.Clone(hospitalDepartments) }
+func ConsulateServices() []Service   { return slices.Clone(consulateServices) }
+func BureauServices() []Service      { return slices.Clone(bureauServices) }
 
 // mondayToFriday builds a Mon–Fri rule for the given local-minute window.
 func mondayToFriday(start, end int) []RuleDef {
@@ -124,7 +154,8 @@ func AllSchedules() []ScheduleDef {
 	var out []ScheduleDef
 
 	for _, hv := range hospitalVenues {
-		for _, dept := range hospitalDepartments {
+		for _, d := range hospitalDepartments {
+			dept := d.Name
 			out = append(out, ScheduleDef{
 				Slug:            hv.Slug + "-" + Slugify(dept),
 				Name:            dept + " · " + hv.Name,
@@ -135,7 +166,8 @@ func AllSchedules() []ScheduleDef {
 		}
 	}
 
-	for _, svc := range consulateServices {
+	for _, c := range consulateServices {
+		svc := c.Name
 		out = append(out, ScheduleDef{
 			Slug:            ConsulatePrefix + "-" + Slugify(svc),
 			Name:            svc + " · Aurenor Consulate",
@@ -145,8 +177,9 @@ func AllSchedules() []ScheduleDef {
 		})
 	}
 
-	for _, svc := range bureauServices {
-		rules := mondayToFriday(510, 990) // 08:30–16:30
+	for _, b := range bureauServices {
+		svc := b.Name
+		rules := mondayToFriday(510, 990)                                      // 08:30–16:30
 		rules = append(rules, RuleDef{Weekday: 6, StartMin: 540, EndMin: 720}) // Sat 09:00–12:00
 		out = append(out, ScheduleDef{
 			Slug:            BureauPrefix + "-" + Slugify(svc),
@@ -188,11 +221,43 @@ var filmSpecs = []filmSpec{
 	{"harborlight", "Poor Things", "Screen B", standardSeated(5, 10), [][2]int{{16, 30}, {21, 0}}},
 }
 
+// showtime is one weekly slot of a film: the same film, salon and time every
+// week on one weekday.
+type showtime struct {
+	spec         filmSpec
+	weekday      time.Weekday
+	hour, minute int
+}
+
+// showtimes lays every film time out over the week. The n-th time in catalog
+// order plays on weekday n mod 7, so each day carries two or three showings and
+// a two-week board stays under the summary endpoint's 50-slug cap.
+func showtimes() []showtime {
+	var out []showtime
+	n := 0
+	for _, fs := range filmSpecs {
+		for _, hm := range fs.Times {
+			out = append(out, showtime{spec: fs, weekday: time.Weekday(n % 7), hour: hm[0], minute: hm[1]})
+			n++
+		}
+	}
+	return out
+}
+
+func location() *time.Location {
+	loc, err := time.LoadLocation(TZ)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
 // eventSlug is the one place a showing's slug is spelled. The seeder and the
 // theater page both go through it, so a page can never offer a showing under a
-// name the seeder did not create.
-func eventSlug(theater, film string, hour, minute int) string {
-	return fmt.Sprintf("%s-%s-%02d%02d", theater, Slugify(film), hour, minute)
+// name the seeder did not create. The date is part of the slug because the same
+// film plays the same time every week.
+func eventSlug(theater, film string, day time.Time, hour, minute int) string {
+	return fmt.Sprintf("%s-%s-%s-%02d%02d", theater, Slugify(film), day.Format("20060102"), hour, minute)
 }
 
 // Showing is one seeded showing as a page lists it.
@@ -212,79 +277,94 @@ type Showing struct {
 	Cols       int    `json:"cols,omitempty"`
 }
 
-// TheaterShowings is every showing seeded for one theater, in catalog order.
-func TheaterShowings(theater string) []Showing {
-	var out []Showing
-	for _, fs := range filmSpecs {
-		if fs.Theater != theater {
-			continue
-		}
-		for _, hm := range fs.Times {
-			out = append(out, Showing{
-				Slug:       eventSlug(fs.Theater, fs.Film, hm[0], hm[1]),
-				Film:       fs.Film,
-				Salon:      fs.Salon,
-				Kind:       fs.Tier.Kind,
-				PriceCents: fs.Tier.PriceCents,
-				Rows:       fs.Tier.Rows,
-				Cols:       fs.Tier.Cols,
+func showingOf(slug string, fs filmSpec) Showing {
+	return Showing{
+		Slug: slug, Film: fs.Film, Salon: fs.Salon, Kind: fs.Tier.Kind,
+		PriceCents: fs.Tier.PriceCents, Rows: fs.Tier.Rows, Cols: fs.Tier.Cols,
+	}
+}
+
+// AllEvents is every showing in the window: from now until the end of the
+// WindowDays-th local day, in date order. A showing that has already started
+// is left out, so the seed never creates one in the past.
+func AllEvents(now time.Time) []EventDef {
+	loc := location()
+	local := now.In(loc)
+	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+
+	var out []EventDef
+	for d := 0; d < WindowDays; d++ {
+		day := today.AddDate(0, 0, d)
+		for _, st := range showtimes() {
+			if st.weekday != day.Weekday() {
+				continue
+			}
+			start := time.Date(day.Year(), day.Month(), day.Day(), st.hour, st.minute, 0, 0, loc)
+			if !start.After(now) {
+				continue
+			}
+			out = append(out, EventDef{
+				Slug:    eventSlug(st.spec.Theater, st.spec.Film, day, st.hour, st.minute),
+				Theater: st.spec.Theater,
+				Name:    st.spec.Film,
+				Salon:   st.spec.Salon,
+				StartAt: start,
+				Tier:    st.spec.Tier,
 			})
 		}
 	}
 	return out
 }
 
-// FindShowing resolves one theater's showing by its event slug, for the seat
-// page that a showtime links to.
-func FindShowing(theater, event string) (Showing, bool) {
-	for _, s := range TheaterShowings(theater) {
-		if s.Slug == event {
-			return s, true
+// TheaterShowings is every showing one theater has in the window, in date
+// order.
+func TheaterShowings(theater string, now time.Time) []Showing {
+	var out []Showing
+	byFilm := map[string]filmSpec{}
+	for _, fs := range filmSpecs {
+		byFilm[fs.Theater+"|"+fs.Film] = fs
+	}
+	for _, e := range AllEvents(now) {
+		if e.Theater != theater {
+			continue
 		}
+		out = append(out, showingOf(e.Slug, byFilm[e.Theater+"|"+e.Name]))
+	}
+	return out
+}
+
+// FindShowing resolves one theater's showing by its event slug, for the seat
+// page that a showtime links to. It reads the date out of the slug rather than
+// looking in the window, so a link opened a day late still finds its showing;
+// the API then says whether it can still be sold.
+func FindShowing(theater, event string) (Showing, bool) {
+	loc := location()
+	for _, st := range showtimes() {
+		if st.spec.Theater != theater {
+			continue
+		}
+		prefix := theater + "-" + Slugify(st.spec.Film) + "-"
+		suffix := fmt.Sprintf("-%02d%02d", st.hour, st.minute)
+		if !strings.HasPrefix(event, prefix) || !strings.HasSuffix(event, suffix) {
+			continue
+		}
+		date := strings.TrimSuffix(strings.TrimPrefix(event, prefix), suffix)
+		day, err := time.ParseInLocation("20060102", date, loc)
+		if err != nil || day.Weekday() != st.weekday {
+			continue
+		}
+		return showingOf(event, st.spec), true
 	}
 	return Showing{}, false
 }
 
 // TheaterEventSlugs is TheaterShowings reduced to the slugs the API is called
 // with.
-func TheaterEventSlugs(theater string) []string {
-	showings := TheaterShowings(theater)
+func TheaterEventSlugs(theater string, now time.Time) []string {
+	showings := TheaterShowings(theater, now)
 	out := make([]string, len(showings))
 	for i, s := range showings {
 		out[i] = s.Slug
 	}
 	return out
-}
-
-// AllEvents expands every film's showtimes into events, spreading their dates
-// over the next week so all are future-dated.
-func AllEvents(now time.Time) []EventDef {
-	var out []EventDef
-	i := 0
-	for _, fs := range filmSpecs {
-		for _, hm := range fs.Times {
-			hour, minute := hm[0], hm[1]
-			out = append(out, EventDef{
-				Slug:      eventSlug(fs.Theater, fs.Film, hour, minute),
-				Name:      fs.Film,
-				Salon:     fs.Salon,
-				DayOffset: i%7 + 1,
-				Hour:      hour,
-				Minute:    minute,
-				Tier:      fs.Tier,
-			})
-			i++
-		}
-	}
-	return out
-}
-
-// startAt resolves an event's local Hour:Minute on now+DayOffset in TZ.
-func startAt(now time.Time, def EventDef) time.Time {
-	loc, err := time.LoadLocation(TZ)
-	if err != nil {
-		loc = time.UTC
-	}
-	d := now.In(loc).AddDate(0, 0, def.DayOffset)
-	return time.Date(d.Year(), d.Month(), d.Day(), def.Hour, def.Minute, 0, 0, loc)
 }

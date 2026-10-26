@@ -57,11 +57,58 @@ func TestSeedIsIdempotent(t *testing.T) {
 	if first.schedules != 16 {
 		t.Errorf("want 16 schedules, got %d", first.schedules)
 	}
-	if first.events == 0 {
-		t.Error("no events seeded")
+	if first.rules != 84 {
+		t.Errorf("want 84 availability rules, got %d", first.rules)
 	}
-	if first.rules == 0 {
-		t.Error("no availability rules seeded")
+	if want := int64(len(aurenor.AllEvents(now))); first.events != want || want == 0 {
+		t.Errorf("want %d events, got %d", want, first.events)
+	}
+}
+
+// TestExtendCalendarKeepsTheWindowFull is O11 against a real database: eight
+// days after a seed the board still has a fortnight of future showings, and a
+// second run creates nothing.
+func TestExtendCalendarKeepsTheWindowFull(t *testing.T) {
+	db := testsupport.PostgresDB(t, database.MigrationModels()...)
+
+	// Never seeded: there is no calendar owner, so nothing is created.
+	if n, err := aurenor.ExtendCalendar(db, time.Now()); err != nil || n != 0 {
+		t.Fatalf("extend on an empty database: created %d, err %v", n, err)
+	}
+
+	seededAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := aurenor.Seed(db, seededAt, "seed@aurenor.test"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	later := seededAt.AddDate(0, 0, 8)
+	created, err := aurenor.ExtendCalendar(db, later)
+	if err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	if created == 0 {
+		t.Fatal("extend eight days on created no showings")
+	}
+
+	for _, e := range aurenor.AllEvents(later) {
+		var ev models.BookingEvent
+		if res := db.Where("slug = ?", e.Slug).Limit(1).Find(&ev); res.Error != nil || res.RowsAffected == 0 {
+			t.Errorf("showing %s in the window was not created", e.Slug)
+			continue
+		}
+		if !ev.StartAt.Equal(e.StartAt) {
+			t.Errorf("%s starts %v, want %v", e.Slug, ev.StartAt, e.StartAt)
+		}
+	}
+
+	var future int64
+	db.Model(&models.BookingEvent{}).Where("start_at > ?", later).Count(&future)
+	if want := int64(len(aurenor.AllEvents(later))); future != want {
+		t.Errorf("%d future showings after extend, want %d", future, want)
+	}
+
+	if again, err := aurenor.ExtendCalendar(db, later); err != nil || again != 0 {
+		t.Errorf("second extend: created %d, err %v; want 0", again, err)
 	}
 }
 
