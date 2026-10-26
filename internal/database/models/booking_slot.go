@@ -14,6 +14,6 @@ type BookingSlot struct {
 	CreatedAt  time.Time
 	ScheduleID uint      `gorm:"index;uniqueIndex:idx_bslot_key"`
 	StartAt    time.Time `gorm:"uniqueIndex:idx_bslot_key;not null"` // UTC
-	EndAt      time.Time `gorm:"not null"`
+	EndAt      time.Time `gorm:"not null;index"` // indexed for retention
 	Capacity   int       `gorm:"not null"` // snapshot of the schedule's capacity at materialization
 }

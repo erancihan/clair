@@ -15,7 +15,7 @@ flowchart TB
     Svc["booking (the service)<br/>inventory counters, holds, orders, payments, waitlist, fulfiller registry"]
     PG[("Postgres<br/>booking_* tables + NOTIFY triggers")]
     Hub["live.Hub<br/>LISTEN booking_inventory"]
-    Sched["clair scheduler<br/>reaper, every minute"]
+    Sched["clair scheduler<br/>reaper every minute, calendar hourly,<br/>retention daily (opt-in)"]
 
     Pages -->|JSON + SSE| Routes
     Routes --> Appt
@@ -211,6 +211,18 @@ sequenceDiagram
 ```
 
 Three places know what "expired" means, and they agree by construction: the reaper's poll, the reclaim CTE at the top of `HoldUnitsTx`, and the `expires_at > now` predicate in `activeHold`, `assertBuyerLimit` and `CommitTx`. Even before the reaper sweeps it, a lapsed hold is unusable.
+
+## Retention
+
+History is deleted by business time, never by when a row was written: a ticket bought a year ahead is not history until the showing has happened. `booking.PurgeBefore(db, cutoff, now)` is the whole of it, and `PurgeOldBookingData(db, now)` calls it with a 90-day cutoff.
+
+| Goes | Stays |
+|---|---|
+| Orders, order items, payments, tickets | Schedules, availability rules, exceptions |
+| Appointments, holds, waitlist entries | Events, tiers, seats |
+| Past slots and their inventory rows (both are created on first booking) | The inventory rows of tiers and seats |
+
+A slot or showing with a pending order, or a hold that is still live, is skipped whole: a payment for it may still be in flight. The reaper expires such an order after 30 minutes without an active hold, and the next run takes it. Slots go 500 per transaction and showings one per transaction, at most 200 batches of each per run, so a first run over a long history spreads over several nights. `clair scheduler` runs the purge daily at 03:30 UTC only when `RETENTION_ENABLED=true`, keeping `RETENTION_DAYS` (default 90).
 
 ## Live updates
 

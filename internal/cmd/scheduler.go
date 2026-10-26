@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/erancihan/clair/internal/aurenor"
@@ -68,6 +70,28 @@ func SchedulerCmd(ctx context.Context) *cobra.Command {
 				return err
 			}
 
+			// Retention deletes booking history past its business time. It is off
+			// unless RETENTION_ENABLED=true, because it is the one job that
+			// destroys data: whoever runs the system decides to turn it on.
+			if retentionEnabled() {
+				keep := retentionPeriod()
+				if _, err := scheduler.Every(1).Day().At("03:30").SingletonMode().Do(func() {
+					now := time.Now()
+					rep, err := booking.PurgeBefore(db, now.Add(-keep), now)
+					if err != nil {
+						logger.Error("purge booking history", zap.Error(err))
+					}
+					if rep.Total() > 0 || rep.Events > 0 {
+						logger.Info("purged booking history",
+							zap.Int("events", rep.Events), zap.Int("slots", rep.Slots),
+							zap.Int("orders", rep.Orders), zap.Int("rows", rep.Total()))
+					}
+				}); err != nil {
+					return err
+				}
+				logger.Info("retention enabled", zap.Duration("keep", keep))
+			}
+
 			// start scheduler
 			scheduler.StartAsync()
 
@@ -81,4 +105,18 @@ func SchedulerCmd(ctx context.Context) *cobra.Command {
 	}
 
 	return cmd
+}
+
+// retentionEnabled reads RETENTION_ENABLED. Only "true" turns the purge on.
+func retentionEnabled() bool {
+	return os.Getenv("RETENTION_ENABLED") == "true"
+}
+
+// retentionPeriod reads RETENTION_DAYS, falling back to the booking service's
+// default when it is unset or not a positive number.
+func retentionPeriod() time.Duration {
+	if days, err := strconv.Atoi(os.Getenv("RETENTION_DAYS")); err == nil && days > 0 {
+		return time.Duration(days) * 24 * time.Hour
+	}
+	return booking.DefaultRetention
 }
