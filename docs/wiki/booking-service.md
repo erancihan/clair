@@ -15,7 +15,7 @@ flowchart TB
     Svc["booking (the service)<br/>inventory counters, holds, orders, payments, waitlist, fulfiller registry"]
     PG[("Postgres<br/>booking_* tables + NOTIFY triggers")]
     Hub["live.Hub<br/>LISTEN booking_inventory"]
-    Sched["clair scheduler<br/>reaper every minute, calendar hourly,<br/>retention daily (opt-in)"]
+    Sched["clair scheduler<br/>reaper every minute, calendar hourly,<br/>retention daily and simulator (both opt-in)"]
 
     Pages -->|JSON + SSE| Routes
     Routes --> Appt
@@ -253,6 +253,18 @@ sequenceDiagram
 
 Schedules work the same way on `GET /appointments/schedules/{slug}/availability/stream`, with topic `schedule:<id>`. Rule and exception changes announce too, because availability is computed, not stored.
 
+## Simulator
+
+`internal/simulator` books the demo through the same calls a visitor's request reaches: `ticketing.HoldGA` or `HoldSeatGroup` then `Checkout` for a showing, and `appointments.Book` for a slot. Every row it writes is one the booking service itself allowed. Each tick, run every minute by `clair scheduler` when `SIM_ENABLED=true`:
+
+- **Fill.** Every showing and free schedule in a 14-day horizon is moved toward `target × sqrt(1 − time-to-start / horizon)`. At most three units go to one showing per tick, and a seated group sits side by side in one row.
+- **Churn.** With a small chance per showing and per schedule, one of the simulator's own paid orders is cancelled through `ticketing.CancelOrder`, or one of its appointments through `CancelByToken`. The freed units reach the waitlist like any other cancel.
+- **Abandon.** With a small chance per showing, a hold is placed and never paid. The reaper releases it.
+
+Its buyers are `sim:<n>` owner references, one per purchase, so the per-buyer cap never decides how full a showing gets. Appointments have no owner reference, so the simulator writes the same `sim:` prefix into the guest email.
+
+Two guards stand in front of it. `simulator.Guard` refuses `APP_ENV=production` and any `DATABASE_URL` host that is not localhost or a compose service (`postgres`, `db`), unless `SIM_ALLOW_PRODUCTION=true`. It runs before the scheduler connects, and a refusal makes the scheduler exit non-zero. A session-level advisory lock, held on a connection taken out of the pool, makes one scheduler the runner and has any other stand by.
+
 ## Open questions about the design
 
 Points worth a decision rather than defects. Each names where the code stands today.
@@ -265,4 +277,3 @@ Points worth a decision rather than defects. Each names where the code stands to
 6. **`topUpGA` repeats the guarded `held` increment** instead of calling a service primitive, so the capacity predicate is written in two packages.
 7. **Inventory ownership is three nullable foreign keys.** `OwnerRef` keeps "exactly one" in one place in Go. The database does not enforce it.
 8. **One payment provider, and refunds are mock rows.** The allowlist holds `mock`, and a refund is a payment row with kind `refund`; nothing calls a provider back. A real provider needs its refund call made from `refundDueTx`. A second, distinct payment for an order that is already paid is recorded and not refunded.
-9. **`CancelByToken` reads `time.Now()` and skips the write-retry wrapper**, unlike every other entry point (roadmap K20).

@@ -9,6 +9,7 @@ import (
 	"github.com/erancihan/clair/internal/aurenor"
 	"github.com/erancihan/clair/internal/booking"
 	"github.com/erancihan/clair/internal/database"
+	"github.com/erancihan/clair/internal/simulator"
 	"github.com/erancihan/clair/internal/utils"
 	"github.com/go-co-op/gocron"
 	"github.com/spf13/cobra"
@@ -27,6 +28,17 @@ func SchedulerCmd(ctx context.Context) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger := utils.NewLogger("scheduler")
 			defer func() { _ = logger.Sync() }()
+
+			// The simulator's guard runs before anything connects, so a scheduler
+			// pointed at the wrong database for it never opens a connection.
+			simEnabled := os.Getenv("SIM_ENABLED") == "true"
+			if simEnabled {
+				if err := simulator.Guard(os.Getenv("DATABASE_URL"), os.Getenv("APP_ENV"),
+					os.Getenv("SIM_ALLOW_PRODUCTION") == "true"); err != nil {
+					logger.Error("simulator refused", zap.Error(err))
+					return err
+				}
+			}
 
 			// database configuration
 			db, err := database.New(ctx)
@@ -90,6 +102,36 @@ func SchedulerCmd(ctx context.Context) *cobra.Command {
 					return err
 				}
 				logger.Info("retention enabled", zap.Duration("keep", keep))
+			}
+
+			// The simulator books the demo showings and slots so the pages look
+			// lived in. Off unless SIM_ENABLED=true, and refused outright on a
+			// database that looks like production unless SIM_ALLOW_PRODUCTION=true:
+			// a scheduler asked to simulate against the wrong database exits
+			// rather than starting without it.
+			if simEnabled {
+				cfg := simulator.DefaultConfig()
+				if v, err := strconv.ParseFloat(os.Getenv("SIM_TARGET_OCCUPANCY"), 64); err == nil && v > 0 && v <= 1 {
+					cfg.TargetOccupancy = v
+				}
+				runner := simulator.NewRunner(db, simulator.New(db, cfg, uint64(time.Now().UnixNano())))
+				defer func() { _ = runner.Close() }()
+
+				if _, err := scheduler.Every(1).Minute().SingletonMode().Do(func() {
+					rep, ran, err := runner.Tick(ctx, time.Now())
+					if err != nil {
+						logger.Error("simulator tick", zap.Error(err))
+					}
+					if ran && (rep.TicketsSold > 0 || rep.AppointmentsBooked > 0 || rep.OrdersCancelled > 0) {
+						logger.Info("simulator tick",
+							zap.Int("tickets", rep.TicketsSold), zap.Int("appointments", rep.AppointmentsBooked),
+							zap.Int("cancelled", rep.OrdersCancelled+rep.AppointmentsDropped),
+							zap.Int("abandoned", rep.HoldsAbandoned))
+					}
+				}); err != nil {
+					return err
+				}
+				logger.Info("simulator enabled", zap.Float64("target_occupancy", cfg.TargetOccupancy))
 			}
 
 			// start scheduler

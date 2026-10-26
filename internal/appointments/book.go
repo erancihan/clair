@@ -80,8 +80,16 @@ func Book(db *gorm.DB, in BookInput, now time.Time) (*models.BookingAppointment,
 }
 
 // CancelByToken cancels a confirmed appointment and frees its slot. Idempotent:
-// an unknown or already-cancelled token is a no-op.
-func CancelByToken(db *gorm.DB, cancelToken string) error {
+// an unknown or already-cancelled token is a no-op. Like every other entry point
+// it takes now, which the freed slot's waitlist offer is timed from, and it
+// retries on a serialization failure or a deadlock.
+func CancelByToken(db *gorm.DB, cancelToken string, now time.Time) error {
+	return booking.WithWriteRetry(func() error {
+		return cancelByTokenTx(db, cancelToken, now)
+	})
+}
+
+func cancelByTokenTx(db *gorm.DB, cancelToken string, now time.Time) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var a models.BookingAppointment
 		err := tx.Where("cancel_token = ? AND status = ?", cancelToken, "confirmed").First(&a).Error
@@ -95,7 +103,7 @@ func CancelByToken(db *gorm.DB, cancelToken string) error {
 		if err != nil {
 			return err
 		}
-		if err := booking.Cancel(tx, inv.ID, 1, time.Now()); err != nil {
+		if err := booking.Cancel(tx, inv.ID, 1, now); err != nil {
 			return err
 		}
 
