@@ -1,0 +1,371 @@
+package pages
+
+// The host pages: where a signed-in account runs what other people book.
+//
+// They are thin on purpose. Every rule about what a schedule or an event may
+// look like is enforced by the host JSON routes, and these screens only collect
+// the fields and show what the routes answer, including their refusals. A rule
+// checked here as well would be a second copy that drifts from the first.
+//
+// Two screens: the overview, which lists schedules and creates schedules and
+// events, and one editor per schedule for its availability and its bookings.
+
+// hostFrame is the shared frame for both host screens: the page gutter, a back
+// link when there is somewhere to go back to, a heading and a subtitle.
+templ hostFrame(back string, title string, subtitle string) {
+	<div class="mt-16 sm:mt-16 sm:px-8">
+		<div class="mx-auto max-w-7xl lg:px-8">
+			<div class="relative px-4 sm:px-8 lg:px-12">
+				<div class="mx-auto max-w-3xl">
+					@hostScript()
+					if back != "" {
+						<a href={ templ.SafeURL(back) }
+							class="inline-flex items-center gap-1.5 text-sm text-zinc-500 transition hover:text-teal-600 dark:text-zinc-400 dark:hover:text-teal-400">
+							<span aria-hidden="true">←</span> All schedules
+						</a>
+					}
+					<header class="mt-4">
+						<h1 class="text-3xl font-bold tracking-tight text-zinc-800 dark:text-zinc-100 sm:text-4xl">{ title }</h1>
+						<p class="mt-2 text-base text-zinc-600 dark:text-zinc-400">{ subtitle }</p>
+					</header>
+					<div class="mt-10 space-y-10">
+						{ children... }
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// HostHome is the host overview: the caller's schedules, and the two forms that
+// create something new.
+templ HostHome() {
+	@hostFrame("", "Host", "Schedules people book appointments on, and events people buy tickets for. Everything here is yours alone.") {
+		@hostScheduleList()
+		@hostEventForm()
+	}
+}
+
+// hostScheduleList lists the caller's schedules and creates new ones. A new
+// schedule opens in its editor, because a schedule with no rules offers no
+// times, and the editor is where rules are added.
+templ hostScheduleList() {
+	<section x-data="hostHome" aria-labelledby="host-schedules" class={ hostPanelClass }>
+		<h2 id="host-schedules" class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">Schedules</h2>
+
+		<p x-show="loading" role="status" class="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading schedules…</p>
+		<p x-show="!loading && schedules.length === 0 && !loadError" x-cloak class="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+			No schedules yet. Create one below.
+		</p>
+		<p x-show="loadError" x-cloak role="alert" class="mt-4 text-sm text-red-600 dark:text-red-400" x-text="loadError"></p>
+
+		<ul x-show="schedules.length > 0" x-cloak class="mt-4 divide-y divide-zinc-100 dark:divide-zinc-700/60">
+			<template x-for="s in schedules" :key="s.id">
+				<li class="py-3">
+					<a :href="'/host/schedules/' + encodeURIComponent(s.slug)" class="group flex items-center justify-between gap-4">
+						<span class="min-w-0">
+							<span class="block truncate text-sm font-medium text-zinc-800 transition group-hover:text-teal-600 dark:text-zinc-100 dark:group-hover:text-teal-400" x-text="s.name"></span>
+							<span class="block text-xs text-zinc-500 dark:text-zinc-400" x-text="hostScheduleLine(s)"></span>
+						</span>
+						<span aria-hidden="true" class="flex-none text-zinc-400 transition group-hover:text-teal-500">→</span>
+					</a>
+				</li>
+			</template>
+		</ul>
+
+		<form @submit.prevent="create()" class="mt-6 border-t border-zinc-100 pt-6 dark:border-zinc-700/60">
+			<h3 class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">New schedule</h3>
+			<div class="mt-3 grid gap-3 sm:grid-cols-2">
+				<div>
+					<label for="sched-name" class={ hostLabelClass }>Name</label>
+					<input id="sched-name" x-model="form.name" @input="suggestSlug()" type="text" required class={ hostInputClass }/>
+				</div>
+				<div>
+					// The slug is the schedule's public address, so it is shown and
+					// editable rather than derived silently.
+					<label for="sched-slug" class={ hostLabelClass }>Slug</label>
+					<input id="sched-slug" x-model="form.slug" @input="slugEdited = true" type="text" required class={ hostInputClass }/>
+				</div>
+				<div class="sm:col-span-2">
+					<label for="sched-desc" class={ hostLabelClass }>Description</label>
+					<input id="sched-desc" x-model="form.description" type="text" class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="sched-tz" class={ hostLabelClass }>Timezone (IANA)</label>
+					<input id="sched-tz" x-model="form.timezone" type="text" required class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="sched-duration" class={ hostLabelClass }>Slot length (minutes)</label>
+					<input id="sched-duration" x-model.number="form.slot_duration_min" type="number" min="1" required class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="sched-capacity" class={ hostLabelClass }>People per slot</label>
+					<input id="sched-capacity" x-model.number="form.capacity" type="number" min="1" required class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="sched-lead" class={ hostLabelClass }>Notice needed (minutes)</label>
+					<input id="sched-lead" x-model.number="form.lead_time_min" type="number" min="0" class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="sched-window" class={ hostLabelClass }>Bookable ahead (days)</label>
+					<input id="sched-window" x-model.number="form.window_days" type="number" min="1" class={ hostInputClass }/>
+				</div>
+				<div class="flex items-end">
+					<label class="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+						<input x-model="form.requires_payment" type="checkbox" class="rounded border-zinc-300 dark:border-zinc-600"/>
+						Paid appointments
+					</label>
+				</div>
+				<div x-show="form.requires_payment" x-cloak>
+					<label for="sched-price" class={ hostLabelClass }>Price</label>
+					<input id="sched-price" x-model="form.price" type="number" min="0.01" step="0.01" class={ hostInputClass }/>
+				</div>
+				<div x-show="form.requires_payment" x-cloak>
+					<label for="sched-currency" class={ hostLabelClass }>Currency</label>
+					<input id="sched-currency" x-model="form.currency" type="text" maxlength="3" class={ hostInputClass }/>
+				</div>
+			</div>
+			<p x-show="error" x-cloak role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400" x-text="error"></p>
+			<button type="submit" :disabled="saving" class={ "mt-4 " + hostPrimaryClass }
+				x-text="saving ? 'Creating…' : 'Create schedule'">Create schedule</button>
+		</form>
+	</section>
+}
+
+// hostEventForm creates an event with one ticket tier. One tier covers the
+// common case; an event with several is a JSON request away, and a form that
+// grows tiers is a form nobody finishes.
+templ hostEventForm() {
+	<section x-data="hostEvent" aria-labelledby="host-event" class={ hostPanelClass }>
+		<h2 id="host-event" class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">New event</h2>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+			One showing with one ticket tier: a pool of general admission, or rows of numbered seats.
+		</p>
+
+		<form @submit.prevent="create()" class="mt-4">
+			<div class="grid gap-3 sm:grid-cols-2">
+				<div>
+					<label for="event-name" class={ hostLabelClass }>Name</label>
+					<input id="event-name" x-model="form.name" @input="suggestSlug()" type="text" required class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="event-slug" class={ hostLabelClass }>Slug</label>
+					<input id="event-slug" x-model="form.slug" @input="slugEdited = true" type="text" required class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="event-start" class={ hostLabelClass }>Starts (your local time)</label>
+					<input id="event-start" x-model="form.start" type="datetime-local" required class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="event-tz" class={ hostLabelClass }>Timezone (IANA)</label>
+					<input id="event-tz" x-model="form.timezone" type="text" class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="event-max" class={ hostLabelClass }>Tickets per buyer (0 for no limit)</label>
+					<input id="event-max" x-model.number="form.max_per_buyer" type="number" min="0" class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="event-kind" class={ hostLabelClass }>Tier kind</label>
+					<select id="event-kind" x-model="tier.kind" class={ hostInputClass }>
+						<option value="ga">General admission</option>
+						<option value="seated">Numbered seats</option>
+					</select>
+				</div>
+				<div>
+					<label for="event-tier" class={ hostLabelClass }>Tier name</label>
+					<input id="event-tier" x-model="tier.name" type="text" class={ hostInputClass }/>
+				</div>
+				<div>
+					<label for="event-price" class={ hostLabelClass }>Price</label>
+					<input id="event-price" x-model="tier.price" type="number" min="0" step="0.01" class={ hostInputClass }/>
+				</div>
+				<div x-show="tier.kind === 'ga'">
+					<label for="event-capacity" class={ hostLabelClass }>Tickets</label>
+					<input id="event-capacity" x-model.number="tier.capacity" type="number" min="1" class={ hostInputClass }/>
+				</div>
+				<div x-show="tier.kind === 'seated'" x-cloak>
+					<label for="event-rows" class={ hostLabelClass }>Rows (lettered from A)</label>
+					<input id="event-rows" x-model.number="tier.rows" type="number" min="1" max="26" class={ hostInputClass }/>
+				</div>
+				<div x-show="tier.kind === 'seated'" x-cloak>
+					<label for="event-per-row" class={ hostLabelClass }>Seats per row</label>
+					<input id="event-per-row" x-model.number="tier.perRow" type="number" min="1" class={ hostInputClass }/>
+				</div>
+			</div>
+			<p x-show="error" x-cloak role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400" x-text="error"></p>
+			<button type="submit" :disabled="saving" class={ "mt-4 " + hostPrimaryClass }
+				x-text="saving ? 'Creating…' : 'Create event'">Create event</button>
+		</form>
+
+		<div x-show="created" x-cloak role="status" tabindex="-1" x-ref="created"
+			class="mt-6 rounded-2xl bg-teal-50 p-5 dark:bg-teal-400/10">
+			<p class="text-sm font-medium text-teal-900 dark:text-teal-100">
+				Created <span x-text="created ? created.name : ''"></span>
+			</p>
+			<p class="mt-1 text-sm text-teal-800/80 dark:text-teal-200/70">
+				<span x-text="created ? hostWhen(created.start_at) : ''"></span>
+				· slug <code class="font-mono text-xs" x-text="created ? created.slug : ''"></code>
+			</p>
+		</div>
+	</section>
+}
+
+// HostSchedule is the editor for one schedule: its settings, the weekly rules
+// and the date exceptions that make up its availability, and its bookings.
+//
+// The order follows how a host thinks about it: when am I open in a normal
+// week, which days are different, and who has booked.
+templ HostSchedule(slug string) {
+	@hostFrame("/host", slug, "Weekly hours, the days that differ, and who has booked.") {
+		<div x-data={ hostScheduleAttr(slug) } class="space-y-10">
+			<p x-show="loading" role="status" class="text-sm text-zinc-500 dark:text-zinc-400">Loading schedule…</p>
+			<p x-show="loadError" x-cloak role="alert"
+				class="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300" x-text="loadError"></p>
+
+			<section x-show="schedule" x-cloak aria-labelledby="host-summary" class={ hostPanelClass }>
+				<h2 id="host-summary" class="text-lg font-semibold text-zinc-800 dark:text-zinc-100" x-text="schedule ? schedule.name : ''"></h2>
+				<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400" x-text="schedule ? hostScheduleLine(schedule) : ''"></p>
+				<p x-show="schedule && schedule.description" class="mt-3 text-sm text-zinc-600 dark:text-zinc-400" x-text="schedule ? schedule.description : ''"></p>
+			</section>
+
+			@hostRules()
+			@hostExceptions()
+			@hostBookings()
+		</div>
+	}
+}
+
+// hostRules is the weekly availability: one row per window, and the form that
+// adds one. Times are wall-clock times in the schedule's own timezone, which is
+// what the rules store.
+templ hostRules() {
+	<section x-show="schedule" x-cloak aria-labelledby="host-rules" class={ hostPanelClass }>
+		<h2 id="host-rules" class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">Weekly hours</h2>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+			In <span x-text="schedule ? schedule.timezone : ''"></span>. Removing hours never cancels a booking already made.
+		</p>
+
+		<p x-show="rules.length === 0" class="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+			No weekly hours yet, so nobody can book. Add a window below.
+		</p>
+		<ul x-show="rules.length > 0" class="mt-4 divide-y divide-zinc-100 dark:divide-zinc-700/60">
+			<template x-for="rule in rules" :key="rule.ID">
+				<li class="flex items-center justify-between gap-4 py-3">
+					<span class="text-sm text-zinc-800 dark:text-zinc-100">
+						<span class="font-medium" x-text="HOST_WEEKDAYS[rule.Weekday]"></span>
+						<span class="tabular-nums text-zinc-500 dark:text-zinc-400" x-text="hostClock(rule.StartMin) + '–' + hostClock(rule.EndMin)"></span>
+					</span>
+					<button type="button" @click="removeRule(rule)" :disabled="busy === 'rule-' + rule.ID" class={ hostDeleteClass }
+						x-text="busy === 'rule-' + rule.ID ? 'Removing…' : 'Remove'">Remove</button>
+				</li>
+			</template>
+		</ul>
+
+		<form @submit.prevent="addRule()" class="mt-4 grid gap-3 border-t border-zinc-100 pt-4 sm:grid-cols-4 dark:border-zinc-700/60">
+			<div>
+				<label for="rule-day" class={ hostLabelClass }>Day</label>
+				<select id="rule-day" x-model.number="rule.weekday" class={ hostInputClass }>
+					<template x-for="(name, i) in HOST_WEEKDAYS" :key="i">
+						<option :value="i" x-text="name" :selected="i === rule.weekday"></option>
+					</template>
+				</select>
+			</div>
+			<div>
+				<label for="rule-start" class={ hostLabelClass }>From</label>
+				<input id="rule-start" x-model="rule.start" type="time" required class={ hostInputClass }/>
+			</div>
+			<div>
+				// 24:00 cannot be typed into a time input, so "until midnight" is
+				// 00:00 here and read as the end of the day.
+				<label for="rule-end" class={ hostLabelClass }>Until</label>
+				<input id="rule-end" x-model="rule.end" type="time" required class={ hostInputClass }/>
+			</div>
+			<div class="flex items-end">
+				<button type="submit" :disabled="busy === 'rule'" class={ hostPrimaryClass }
+					x-text="busy === 'rule' ? 'Adding…' : 'Add hours'">Add hours</button>
+			</div>
+		</form>
+		<p x-show="ruleError" x-cloak role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400" x-text="ruleError"></p>
+	</section>
+}
+
+// hostExceptions is the list of dates that differ from the weekly hours: a day
+// off, or part of one.
+templ hostExceptions() {
+	<section x-show="schedule" x-cloak aria-labelledby="host-exceptions" class={ hostPanelClass }>
+		<h2 id="host-exceptions" class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">Days off</h2>
+		<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+			A date blocked here offers no times in that window, whatever the weekly hours say.
+		</p>
+
+		<p x-show="exceptions.length === 0" class="mt-4 text-sm text-zinc-500 dark:text-zinc-400">No days off.</p>
+		<ul x-show="exceptions.length > 0" class="mt-4 divide-y divide-zinc-100 dark:divide-zinc-700/60">
+			<template x-for="ex in exceptions" :key="ex.ID">
+				<li class="flex items-center justify-between gap-4 py-3">
+					<span class="text-sm text-zinc-800 dark:text-zinc-100">
+						<span class="font-medium tabular-nums" x-text="ex.Date"></span>
+						<span class="tabular-nums text-zinc-500 dark:text-zinc-400"
+							x-text="ex.StartMin === null ? 'All day' : hostClock(ex.StartMin) + '–' + hostClock(ex.EndMin)"></span>
+					</span>
+					<button type="button" @click="removeException(ex)" :disabled="busy === 'ex-' + ex.ID" class={ hostDeleteClass }
+						x-text="busy === 'ex-' + ex.ID ? 'Removing…' : 'Remove'">Remove</button>
+				</li>
+			</template>
+		</ul>
+
+		<form @submit.prevent="addException()" class="mt-4 grid gap-3 border-t border-zinc-100 pt-4 sm:grid-cols-4 dark:border-zinc-700/60">
+			<div>
+				<label for="ex-date" class={ hostLabelClass }>Date</label>
+				<input id="ex-date" x-model="exception.date" type="date" required class={ hostInputClass }/>
+			</div>
+			<div class="flex items-end sm:col-span-3">
+				<label class="inline-flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
+					<input x-model="exception.allDay" type="checkbox" class="rounded border-zinc-300 dark:border-zinc-600"/>
+					All day
+				</label>
+			</div>
+			<div x-show="!exception.allDay" x-cloak>
+				<label for="ex-start" class={ hostLabelClass }>From</label>
+				<input id="ex-start" x-model="exception.start" type="time" class={ hostInputClass }/>
+			</div>
+			<div x-show="!exception.allDay" x-cloak>
+				<label for="ex-end" class={ hostLabelClass }>Until</label>
+				<input id="ex-end" x-model="exception.end" type="time" class={ hostInputClass }/>
+			</div>
+			<div class="flex items-end">
+				<button type="submit" :disabled="busy === 'ex'" class={ hostPrimaryClass }
+					x-text="busy === 'ex' ? 'Adding…' : 'Block date'">Block date</button>
+			</div>
+		</form>
+		<p x-show="exceptionError" x-cloak role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400" x-text="exceptionError"></p>
+	</section>
+}
+
+// hostBookings lists the appointments made on the schedule, cancelled ones
+// included: a host asking who cancelled is asking a real question.
+templ hostBookings() {
+	<section x-show="schedule" x-cloak aria-labelledby="host-bookings" class={ hostPanelClass }>
+		<div class="flex items-center justify-between gap-4">
+			<h2 id="host-bookings" class="text-lg font-semibold text-zinc-800 dark:text-zinc-100">Bookings</h2>
+			<button type="button" @click="loadBookings()"
+				class="text-sm text-zinc-500 transition hover:text-teal-600 dark:text-zinc-400 dark:hover:text-teal-400">Refresh</button>
+		</div>
+
+		<p x-show="bookings.length === 0" class="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Nobody has booked yet.</p>
+		<ul x-show="bookings.length > 0" class="mt-4 divide-y divide-zinc-100 dark:divide-zinc-700/60">
+			<template x-for="b in bookings" :key="b.id">
+				<li class="flex items-center justify-between gap-4 py-3">
+					<span class="min-w-0">
+						<span class="block truncate text-sm font-medium text-zinc-800 dark:text-zinc-100" x-text="b.guest_name || 'Signed-in visitor'"></span>
+						<span class="block text-xs text-zinc-500 dark:text-zinc-400" x-text="hostInZone(b.start_at, schedule ? schedule.timezone : '') + (b.guest_email ? ' · ' + b.guest_email : '')"></span>
+					</span>
+					<span :class="b.status === 'confirmed'
+							? 'bg-teal-50 text-teal-700 dark:bg-teal-400/10 dark:text-teal-300'
+							: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-700/60 dark:text-zinc-400'"
+						class="flex-none rounded-full px-2.5 py-1 text-xs font-medium" x-text="b.status"></span>
+				</li>
+			</template>
+		</ul>
+		<p x-show="bookingsError" x-cloak role="alert" class="mt-3 text-sm text-red-600 dark:text-red-400" x-text="bookingsError"></p>
+	</section>
+}

@@ -116,7 +116,13 @@ func mountSitePages(r *router.Router, ctx server_context.BackEndContext) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 
-	r.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {})
+	// /dashboard is where a sign-in lands when no next path was given. The host
+	// pages are the only dashboard there is, so it sends the visitor there; /host
+	// does the authentication, so an anonymous visitor following this ends up at
+	// the login form like any other guarded page.
+	r.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/host", http.StatusFound)
+	})
 
 	r.HandleFunc("GET /requester", func(w http.ResponseWriter, r *http.Request) {
 		templ.Handler(pages.RequesterPage()).ServeHTTP(w, r)
