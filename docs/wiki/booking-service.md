@@ -265,6 +265,10 @@ Its buyers are `sim:<n>` owner references, one per purchase, so the per-buyer ca
 
 Two guards stand in front of it. `simulator.Guard` refuses `APP_ENV=production` and any `DATABASE_URL` host that is not localhost or a compose service (`postgres`, `db`), unless `SIM_ALLOW_PRODUCTION=true`. It runs before the scheduler connects, and a refusal makes the scheduler exit non-zero. A session-level advisory lock, held on a connection taken out of the pool, makes one scheduler the runner and has any other stand by.
 
+## Host pages
+
+The host routes have two pages, both behind `AuthMiddleware` and mounted in `internal/server/routes/host.go`. `/host` lists the caller's schedules, creates a schedule and creates an event with one tier. `/host/schedules/{slug}` edits one schedule's weekly rules and date exceptions and lists its bookings. It answers 404 for a schedule the caller does not own, the same as the JSON route. The pages call the JSON routes with the shell's CSRF token and show a refusal's plain-text body as it is, so validation lives only in the routes. A new schedule opens in its editor, because a schedule without rules offers no times. An anonymous request is redirected to `/login?next=...`, and only the signed-in account menu links to `/host`.
+
 ## Open questions about the design
 
 Points worth a decision rather than defects. Each names where the code stands today.

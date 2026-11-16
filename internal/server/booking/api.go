@@ -106,6 +106,15 @@ func (a *API) DeleteRule() http.HandlerFunc      { return deleteRule(a.ctx) }
 func (a *API) AddException() http.HandlerFunc    { return addException(a.ctx) }
 func (a *API) DeleteException() http.HandlerFunc { return deleteException(a.ctx) }
 
+// HostsSchedule reports whether the authenticated caller owns the schedule
+// with this slug. It is for the host pages, which answer 404 for a schedule the
+// caller does not own exactly as the JSON routes do, so a guessed slug learns
+// nothing from either. It is not a route.
+func (a *API) HostsSchedule(r *http.Request, slug string) bool {
+	_, ok := loadOwnedSchedule(a.ctx, r, slug)
+	return ok
+}
+
 // ---- ticketing: the events vocabulary over the same service ----
 
 func (a *API) CreateEvent() http.HandlerFunc { return createEvent(a.ctx) }

@@ -71,6 +71,7 @@ func MountBooking(r *router.Router, ctx server_context.BackEndContext) func() {
 	mountAppointments(r, api, ctx, limits)
 	mountEvents(r, api, ctx, limits)
 	mountAurenor(r)
+	mountHost(r, api, ctx)
 
 	// The payment webhook is mounted at the top level, outside both path spaces:
 	// one order can hold appointment slots or event seats, and the provider

@@ -22,7 +22,7 @@ Three phases. A makes what exists hold and makes it runnable by someone else. B 
 ## Phase C. Polish
 
 - C1. Frontend accessibility and UX pass. Findings W7 to W18, W20. Waits for the owner's own review of the current screens.
-- C2. Host surface. The host routes (create event or schedule, rules, exceptions) exist but no page drives them.
+- C2. Host surface. *(done 2026-10-26)* Signed-in pages behind `AuthMiddleware` drive the host routes: `/host` lists the account's schedules and creates schedules and one-tier events (GA or lettered rows of seats), and `/host/schedules/{slug}` adds and removes weekly hours and days off and lists bookings. `/dashboard` redirects to `/host`, which the signed-in account menu links to; nothing an anonymous visitor sees does.
 - C3. Deployment. SHA-tagged images, a real deploy step, migration ordering, per-service healthchecks.
 - C4. Map and game. Aurenor at `/aurenor`, then a game on top. Out of scope until A and B land.
 

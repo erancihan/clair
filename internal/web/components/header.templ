@@ -40,7 +40,8 @@ templ mobileNavigation() {
 }
 
 // userMenu renders the account slot on the right of the header: a menu for a
-// signed-in visitor, and nothing at all otherwise. Login is deliberately
+// signed-in visitor, and nothing at all otherwise. The host pages are reached
+// from here and only from here, so nobody without an account is shown them. Login is deliberately
 // unlisted — there is no public sign-in link; the login route is reached
 // directly by those who know it.
 templ userMenu(user *SessionUser) {
@@ -59,8 +60,8 @@ templ userMenu(user *SessionUser) {
             <div x-show="open" @click.outside="open = false" style="display: none" role="menu"
                 class="absolute right-0 mt-2 w-44 origin-top-right rounded-2xl bg-white/95 py-2 text-sm text-zinc-800 shadow-lg shadow-zinc-800/5 ring-1 ring-zinc-900/5 backdrop-blur dark:bg-zinc-800/95 dark:text-zinc-200 dark:ring-white/10">
                 <p class="px-4 pb-1 text-xs uppercase tracking-wide text-zinc-400 dark:text-zinc-500">{ user.Role }</p>
-                <a href="/dashboard" role="menuitem"
-                    class="block px-4 py-2 transition hover:text-teal-500 dark:hover:text-teal-400">Dashboard</a>
+                <a href="/host" role="menuitem"
+                    class="block px-4 py-2 transition hover:text-teal-500 dark:hover:text-teal-400">Host</a>
                 <a href="/logout" role="menuitem"
                     class="block px-4 py-2 transition hover:text-teal-500 dark:hover:text-teal-400">Sign out</a>
             </div>

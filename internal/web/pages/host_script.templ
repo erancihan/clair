@@ -1,0 +1,356 @@
+package pages
+
+// hostScript drives the host screens: the overview (hostHome, hostEvent) and
+// the schedule editor (hostSchedule).
+//
+// Three things here are load-bearing:
+//
+//   - The routes are the validation. A form here checks only what it needs to
+//     build a request at all, and shows the route's plain-text refusal verbatim
+//     when it says no. Checking a rule twice is how the two copies come to
+//     disagree.
+//   - Rules and exceptions are stored rows serialized without JSON tags, so
+//     they arrive as {ID, Weekday, StartMin, EndMin} and {ID, Date, StartMin,
+//     EndMin}. Schedules and appointments carry snake_case tags. Both shapes
+//     are read as they come rather than renamed on the server.
+//   - After a write the editor reloads the schedule instead of splicing the
+//     answer into its lists, so the order and the rows on screen are always the
+//     route's, never a local guess at them.
+templ hostScript() {
+	<script>
+		window.HOST_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+		// The page shell publishes the session's CSRF token; every mutating host
+		// route checks it.
+		window.hostCSRF = function () {
+			const meta = document.querySelector('meta[name="csrf-token"]');
+			return meta ? meta.content : '';
+		};
+
+		// Minutes from local midnight, as the routes store them, to "HH:MM" and
+		// back. 1440 is the end of the day, which a time input spells 00:00.
+		window.hostClock = function (min) {
+			const h = Math.floor(min / 60), m = min % 60;
+			return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+		};
+		window.hostMinutes = function (hhmm, isEnd) {
+			const [h, m] = String(hhmm || '').split(':').map(Number);
+			if (Number.isNaN(h) || Number.isNaN(m)) return NaN;
+			const min = h * 60 + m;
+			return isEnd && min === 0 ? 24 * 60 : min;
+		};
+
+		// A slug suggested from a name: lowercase, dashes, nothing else. The
+		// host can overwrite it; the route decides whether it is taken.
+		window.hostSlugify = function (s) {
+			return String(s).toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+				.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+		};
+
+		// A schedule in one line: how long a slot is, how many fit, and the zone
+		// its hours are in.
+		window.hostScheduleLine = function (s) {
+			let line = s.slot_duration_min + ' min slots · ' + s.capacity + ' per slot · ' + s.timezone;
+			if (s.requires_payment) line += ' · ' + (s.price_cents / 100).toFixed(2) + ' ' + s.currency;
+			return line;
+		};
+
+		window.hostWhen = function (iso) {
+			if (!iso) return '';
+			return new Date(iso).toLocaleString([], {
+				weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+			});
+		};
+
+		// A booking is shown in the schedule's zone, the one its hours were set
+		// in: a host in another zone reading their own office hours should see
+		// the hours they typed.
+		window.hostInZone = function (iso, zone) {
+			if (!iso) return '';
+			try {
+				return new Date(iso).toLocaleString([], {
+					weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: zone || undefined,
+				});
+			} catch (e) {
+				return window.hostWhen(iso);
+			}
+		};
+
+		window.hostZone = function () {
+			try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; }
+		};
+
+		// One request to a host route. It answers {ok, status, body} and never
+		// throws, so every caller handles a refusal and a dropped network the
+		// same way: by reading `message`.
+		window.hostRequest = async function (method, url, payload) {
+			const init = { method: method, headers: { 'Accept': 'application/json' } };
+			if (method !== 'GET') init.headers['X-CSRF-Token'] = hostCSRF();
+			if (payload !== undefined) {
+				init.headers['Content-Type'] = 'application/json';
+				init.body = JSON.stringify(payload);
+			}
+			try {
+				const res = await fetch(url, init);
+				if (res.ok) {
+					const text = res.status === 204 ? '' : await res.text();
+					return { ok: true, status: res.status, body: text ? JSON.parse(text) : null };
+				}
+				let message = '';
+				if (res.status === 401) message = 'Your session has ended. Reload the page to sign in again.';
+				else if (res.status === 403) message = 'This page went stale. Reload it and try again.';
+				// Every error body from these routes is plain text.
+				else message = (await res.text()).trim() || 'The booking service refused that.';
+				return { ok: false, status: res.status, message: message };
+			} catch (e) {
+				return { ok: false, status: 0, message: 'Could not reach the booking service.' };
+			}
+		};
+
+		document.addEventListener('alpine:init', () => {
+			Alpine.data('hostHome', () => ({
+				schedules: [],
+				loading: true,
+				loadError: '',
+
+				form: {
+					name: '', slug: '', description: '', timezone: hostZone(),
+					slot_duration_min: 30, capacity: 1, lead_time_min: 0, window_days: 30,
+					requires_payment: false, price: '', currency: 'USD',
+				},
+				slugEdited: false,
+				saving: false,
+				error: '',
+
+				async init() {
+					const got = await hostRequest('GET', '/appointments/schedules');
+					this.loading = false;
+					if (!got.ok) {
+						this.loadError = got.message;
+						return;
+					}
+					this.schedules = got.body || [];
+				},
+
+				// Follows the name until the host types a slug of their own.
+				suggestSlug() {
+					if (!this.slugEdited) this.form.slug = hostSlugify(this.form.name);
+				},
+
+				async create() {
+					if (this.saving) return;
+					this.saving = true;
+					this.error = '';
+
+					const f = this.form;
+					const payload = {
+						slug: f.slug.trim(), name: f.name.trim(), description: f.description.trim(),
+						timezone: f.timezone.trim(), slot_duration_min: f.slot_duration_min, capacity: f.capacity,
+						lead_time_min: f.lead_time_min || 0, window_days: f.window_days || 0,
+						requires_payment: f.requires_payment,
+					};
+					if (f.requires_payment) {
+						// Money goes over the wire in cents; the form speaks in units.
+						payload.price_cents = Math.round(parseFloat(f.price || '0') * 100);
+						payload.currency = f.currency.trim().toUpperCase();
+					}
+
+					const got = await hostRequest('POST', '/appointments/schedules', payload);
+					if (got.ok) {
+						// Straight into the editor: a new schedule has no hours yet, and
+						// without them it offers nobody a time.
+						window.location.href = '/host/schedules/' + encodeURIComponent(got.body.slug);
+						return;
+					}
+					this.error = got.status === 409 ? 'That slug is taken. Choose another.' : got.message;
+					this.saving = false;
+				},
+			}));
+
+			Alpine.data('hostEvent', () => ({
+				form: { name: '', slug: '', start: '', timezone: hostZone(), max_per_buyer: 0 },
+				tier: { kind: 'ga', name: 'General admission', price: '', capacity: 100, rows: 5, perRow: 10 },
+				slugEdited: false,
+				saving: false,
+				error: '',
+				created: null,
+
+				suggestSlug() {
+					if (!this.slugEdited) this.form.slug = hostSlugify(this.form.name);
+				},
+
+				// Rows A, B, C… each numbered from 1. A host who needs a stranger
+				// layout than a rectangle can send the seats as JSON.
+				seats() {
+					const seats = [];
+					const rows = Math.min(Math.max(this.tier.rows | 0, 0), 26);
+					for (let r = 0; r < rows; r++) {
+						const row = String.fromCharCode(65 + r);
+						for (let n = 1; n <= (this.tier.perRow | 0); n++) {
+							seats.push({ label: row + n, row_name: row, number: n });
+						}
+					}
+					return seats;
+				},
+
+				async create() {
+					if (this.saving) return;
+					// The start is the one thing the route would accept empty, as the
+					// zero time, and that event would be over before it was made.
+					if (!this.form.start) {
+						this.error = 'Please choose when the event starts.';
+						return;
+					}
+
+					this.saving = true;
+					this.error = '';
+					this.created = null;
+
+					const tier = {
+						name: this.tier.name.trim(), kind: this.tier.kind,
+						price_cents: Math.round(parseFloat(this.tier.price || '0') * 100),
+					};
+					if (tier.kind === 'ga') tier.capacity = this.tier.capacity;
+					else tier.seats = this.seats();
+
+					const got = await hostRequest('POST', '/events', {
+						slug: this.form.slug.trim(), name: this.form.name.trim(),
+						// datetime-local is the browser's wall clock; the route wants an
+						// instant.
+						start_at: new Date(this.form.start).toISOString(),
+						timezone: this.form.timezone.trim(), max_per_buyer: this.form.max_per_buyer || 0,
+						tiers: [tier],
+					});
+					this.saving = false;
+
+					if (!got.ok) {
+						this.error = got.status === 409 ? 'That slug is taken. Choose another.' : got.message;
+						return;
+					}
+					this.created = got.body;
+					this.form.name = '';
+					this.form.slug = '';
+					this.slugEdited = false;
+					this.$nextTick(() => this.$refs.created && this.$refs.created.focus());
+				},
+			}));
+
+			Alpine.data('hostSchedule', (cfg) => ({
+				slug: cfg.slug,
+
+				schedule: null,
+				rules: [],
+				exceptions: [],
+				bookings: [],
+
+				loading: true,
+				loadError: '',
+				bookingsError: '',
+				ruleError: '',
+				exceptionError: '',
+
+				// Which control is mid-request: 'rule', 'ex', 'rule-<id>', 'ex-<id>'.
+				// One at a time is plenty for one person editing one schedule.
+				busy: '',
+
+				rule: { weekday: 1, start: '09:00', end: '17:00' },
+				exception: { date: '', allDay: true, start: '12:00', end: '13:00' },
+
+				get base() {
+					return '/appointments/schedules/' + encodeURIComponent(this.slug);
+				},
+
+				async init() {
+					await Promise.all([this.load(), this.loadBookings()]);
+					this.loading = false;
+				},
+
+				async load() {
+					const got = await hostRequest('GET', this.base);
+					if (!got.ok) {
+						this.loadError = got.status === 404 ? 'This schedule no longer exists.' : got.message;
+						return;
+					}
+					this.loadError = '';
+					this.schedule = got.body.schedule;
+					this.rules = got.body.rules || [];
+					this.exceptions = got.body.exceptions || [];
+				},
+
+				async loadBookings() {
+					const got = await hostRequest('GET', this.base + '/bookings');
+					if (!got.ok) {
+						this.bookingsError = got.message;
+						return;
+					}
+					this.bookingsError = '';
+					this.bookings = got.body || [];
+				},
+
+				async addRule() {
+					if (this.busy) return;
+					const start = hostMinutes(this.rule.start, false);
+					const end = hostMinutes(this.rule.end, true);
+					if (Number.isNaN(start) || Number.isNaN(end)) {
+						this.ruleError = 'Please give both times.';
+						return;
+					}
+
+					this.busy = 'rule';
+					this.ruleError = '';
+					const got = await hostRequest('POST', this.base + '/rules', {
+						weekday: this.rule.weekday, start_min: start, end_min: end,
+					});
+					if (got.ok) await this.load();
+					else this.ruleError = got.message;
+					this.busy = '';
+				},
+
+				async removeRule(rule) {
+					if (this.busy) return;
+					this.busy = 'rule-' + rule.ID;
+					this.ruleError = '';
+					const got = await hostRequest('DELETE', this.base + '/rules/' + rule.ID);
+					// A 404 means it is already gone, which is what was asked for.
+					if (got.ok || got.status === 404) await this.load();
+					else this.ruleError = got.message;
+					this.busy = '';
+				},
+
+				async addException() {
+					if (this.busy) return;
+					if (!this.exception.date) {
+						this.exceptionError = 'Please choose a date.';
+						return;
+					}
+					const payload = { date: this.exception.date };
+					if (!this.exception.allDay) {
+						payload.start_min = hostMinutes(this.exception.start, false);
+						payload.end_min = hostMinutes(this.exception.end, true);
+						if (Number.isNaN(payload.start_min) || Number.isNaN(payload.end_min)) {
+							this.exceptionError = 'Please give both times, or block the whole day.';
+							return;
+						}
+					}
+
+					this.busy = 'ex';
+					this.exceptionError = '';
+					const got = await hostRequest('POST', this.base + '/exceptions', payload);
+					if (got.ok) await this.load();
+					else this.exceptionError = got.message;
+					this.busy = '';
+				},
+
+				async removeException(ex) {
+					if (this.busy) return;
+					this.busy = 'ex-' + ex.ID;
+					this.exceptionError = '';
+					const got = await hostRequest('DELETE', this.base + '/exceptions/' + ex.ID);
+					if (got.ok || got.status === 404) await this.load();
+					else this.exceptionError = got.message;
+					this.busy = '';
+				},
+			}));
+		});
+	</script>
+}
